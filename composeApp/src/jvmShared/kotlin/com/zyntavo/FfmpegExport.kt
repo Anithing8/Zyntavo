@@ -32,8 +32,10 @@ object FFmpeg {
         cmd += listOf("-i", ref)
         val dur = if (durMs in 1..600000) durMs else 600000L
         cmd += listOf("-t", n(dur / 1000.0), "-vn", "-ac", "1", "-ar", "${Beats.RATE}", "-f", "s16le", "-")
-        val p = ProcessBuilder(cmd).redirectError(ProcessBuilder.Redirect.DISCARD).start()
-        val bytes = p.inputStream.readBytes()
+        val p = ProcessBuilder(cmd).start()
+        // Android's Java has no Redirect.DISCARD, so the error text is read and thrown away in a side thread.
+        Thread { try { p.errorStream.readBytes() } catch (e: Exception) { } }.also { it.isDaemon = true }.start()
+        val bytes: ByteArray = p.inputStream.readBytes()
         p.waitFor()
         if (bytes.size < 2) return null
         val out = ShortArray(bytes.size / 2)
