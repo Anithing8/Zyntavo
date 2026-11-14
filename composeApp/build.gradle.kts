@@ -45,7 +45,7 @@ kotlin {
 }
 
 android {
-    namespace = "com.photostudio"
+    namespace = "com.zyntavo"
     compileSdk = 35
     defaultConfig {
         applicationId = "app.zyntavo.editor"
@@ -66,7 +66,7 @@ android {
 
 compose.desktop {
     application {
-        mainClass = "com.photostudio.MainKt"
+        mainClass = "com.zyntavo.MainKt"
         nativeDistributions {
             targetFormats(TargetFormat.Msi, TargetFormat.Dmg, TargetFormat.Deb)
             packageName = "Zyntavo"

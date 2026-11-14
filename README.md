@@ -5,7 +5,7 @@
 A photo, video and subtitle editor for Windows and Android. It works on your own device: editing, subtitles and the
 written-prompt editing do not need an internet connection (speech and translation models are downloaded once).
 
-The Kotlin source still lives in the package `com.photostudio`. That is an internal name only and is not shown to anyone.
+The Kotlin source still lives in the package `com.zyntavo`. That is an internal name only and is not shown to anyone.
 
 ## What it can do
 
@@ -53,32 +53,22 @@ Open the **Prompt** tab (photos) or the box at the top of the clip panel (video)
 It is a rule-based reader, not an AI model. It knows many ways of saying the same thing and fixes small typos, but it
 only controls what the editor already has, and it works on the whole picture or clip, not on one object in it.
 
-## Compared with CapCut
-
-Zyntavo does not have every CapCut feature, and it is not a copy of it. Things that are **not** here yet:
+## Not here yet
 
 - Reverse, freeze frame and speed curves
 - Green screen (chroma key), masks, motion tracking, stabilisation
 - Beat sync, auto-cut, templates, and stock music, video or effects libraries
-- Generative AI features, AI avatars, voice cloning
+- Generative features, avatars, voice cloning
 - Animated text and a large text style library, stickers on video
 - Background blur canvas for tall video
 - Cloud projects, sharing and collaboration, keyboard shortcuts
 
 ## Building
 
-Push to GitHub and the workflow in `.github/workflows/build.yml` builds the Android app and the Windows app.
+The workflow in `.github/workflows/build.yml` builds the Android app and the Windows app.
 Windows: `./gradlew :composeApp:createDistributable`. Android: `./gradlew :composeApp:assembleDebug`.
 
-Downloaded models and what the app learns are kept in `.zyntavo` in your user folder (a `.sheen` folder from an older
-version is moved there automatically). On Android the Android application id changed to `app.zyntavo.editor`, so it
-installs as a separate app from older builds.
-
-## About the name
-
-"Zyntavo" is an invented word. A web search found no product, company or app with this name when it was chosen, but a
-web search is not a trademark search. Before publishing or selling the app, check the name in the trademark registers of
-the countries you use it in (for example USPTO, WIPO Global Brand Database, India IP Public Search), and check the
-domain, the Play Store and GitHub. Nobody can promise from here that a name is free of legal problems.
+Downloaded models and what the app learns are kept in the `.zyntavo` folder in your user folder. The Android
+application id is `app.zyntavo.editor`.
 
 Third-party software and models are listed in `THIRD_PARTY_NOTICES.md`.
