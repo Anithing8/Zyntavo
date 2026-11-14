@@ -110,3 +110,9 @@ actual fun writePrefs(text: String) {
     } catch (e: Throwable) {
     }
 }
+
+actual fun imageFromPixels(w: Int, h: Int, px: IntArray): ImageBitmap {
+    val img = BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB)
+    img.setRGB(0, 0, w, h, px, 0, w)
+    return img.toComposeImageBitmap()
+}

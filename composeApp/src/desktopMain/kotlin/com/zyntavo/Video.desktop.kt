@@ -132,3 +132,7 @@ actual suspend fun cutoutVideo(
         work.deleteRecursively()
     }
 }
+
+actual suspend fun decodeAudioMono(ref: String, startMs: Long, durMs: Long): ShortArray? = withContext(Dispatchers.IO) {
+    try { FFmpeg.pcm(ffmpegPath(), ref, startMs, durMs) } catch (e: Exception) { null }
+}

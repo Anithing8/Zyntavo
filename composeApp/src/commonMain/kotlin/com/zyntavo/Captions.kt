@@ -664,7 +664,7 @@ fun CaptionsScreen(m: CaptionsModel) {
             item {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = { Hints.custom = m.glossary; start() }, enabled = !m.busy, modifier = Modifier.fillMaxWidth().height(54.dp)) {
-                        Glyph(Ico.Open, Modifier.size(20.dp), Color.White)
+                        Glyph(Ico.Open, Modifier.size(20.dp), AccentInk)
                         Spacer(Modifier.width(8.dp))
                         Text("Choose video or audio")
                     }
@@ -779,7 +779,7 @@ fun CaptionsScreen(m: CaptionsModel) {
                 }
                 itemsIndexed(m.cues) { i, c ->
                     Column(Modifier.fillMaxWidth().glass(RoundedCornerShape(16.dp), 0.8f).padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("${shortTime(c.start)} \u2192 ${shortTime(c.end)}", color = Accent, style = MaterialTheme.typography.labelLarge)
+                        Text("${shortTime(c.start)} \u2192 ${shortTime(c.end)}", color = TextLo, style = MaterialTheme.typography.labelLarge)
                         var base by remember { mutableStateOf<String?>(null) }
                         OutlinedTextField(
                             value = c.text,

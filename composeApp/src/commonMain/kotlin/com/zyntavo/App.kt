@@ -23,10 +23,11 @@ import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
-private val toolItems = listOf(Ico.Adjust to "Adjust", Ico.Filter to "Filters", Ico.Crop to "Crop", Ico.Text to "Text", Ico.Cutout to "Cutout", Ico.Sparkle to "Prompt")
+private val toolItems = listOf(Ico.Adjust to "Adjust", Ico.Filter to "Filters", Ico.Crop to "Crop", Ico.Text to "Text", Ico.Cutout to "Cutout", Ico.Sparkle to "Prompt", Ico.Detail to "Detail")
 private val navItems = listOf(Ico.Photo to "Photo", Ico.Captions to "Captions", Ico.Video to "Video")
 private val ratios: List<Pair<String, Float?>> = listOf(
     "Original" to null, "1:1" to 1f, "4:5" to 0.8f, "3:4" to 0.75f, "2:3" to 2f / 3f,
@@ -42,7 +43,7 @@ private val stickers = listOf(
 fun App() {
     MaterialTheme(
         colorScheme = darkColorScheme(
-            primary = Accent, onPrimary = Color.White,
+            primary = Accent, onPrimary = AccentInk,
             background = Ink, surface = Surface1, surfaceVariant = Surface2,
             onSurface = TextHi, onSurfaceVariant = TextLo, outline = Line
         ),
@@ -67,7 +68,7 @@ private fun AppShell() {
         AlertDialog(
             onDismissRequest = { showAbout = false },
             containerColor = Surface1,
-            shape = RoundedCornerShape(28.dp),
+            shape = RoundedCornerShape(12.dp),
             confirmButton = { Button(onClick = { showAbout = false }) { Text("Close") } },
             title = {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -75,7 +76,7 @@ private fun AppShell() {
                     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Text("Zyntavo", style = MaterialTheme.typography.titleLarge)
                         Text("Photo, video and subtitle editor", color = TextLo, style = MaterialTheme.typography.bodySmall)
-                        Text("Version 3.1", color = Accent, style = MaterialTheme.typography.labelMedium)
+                        Text("Version 3.1", color = TextLo, style = MaterialTheme.typography.labelMedium)
                     }
                 }
             },
@@ -107,8 +108,8 @@ private fun AppShell() {
                     Modifier.fillMaxWidth().padding(start = 16.dp, end = 6.dp, top = 6.dp),
                     verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    ZyntavoMark(Modifier.size(30.dp))
-                    Text("Zyntavo", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                    ZyntavoMark(Modifier.size(28.dp))
+                    Text("Zyntavo", style = wordmarkStyle, modifier = Modifier.weight(1f))
                     IconBtn(Ico.Info, { showAbout = true }, tint = TextLo)
                 }
                 Box(Modifier.weight(1f).fillMaxWidth().padding(start = 14.dp, end = 14.dp, top = 6.dp)) { body() }
@@ -119,15 +120,22 @@ private fun AppShell() {
 }
 
 @Composable
-private fun NavItem(ico: Ico, name: String, on: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+private fun NavItem(ico: Ico, name: String, on: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier, side: Boolean = false) {
+    // The open screen is paper white with a line on its edge. The rest stay quiet.
     Column(
-        modifier.clip(RoundedCornerShape(16.dp)).background(if (on) Accent.copy(alpha = 0.16f) else Color.Transparent)
-            .clickable(onClick = onClick).padding(vertical = 8.dp),
+        modifier.clickable(onClick = onClick)
+            .drawBehind {
+                if (on) {
+                    if (side) drawLine(TextHi, Offset(1f, 6f), Offset(1f, size.height - 6f), 4f)
+                    else drawLine(TextHi, Offset(0f, 1f), Offset(size.width, 1f), 4f)
+                }
+            }
+            .padding(top = 10.dp, bottom = 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Glyph(ico, Modifier.size(24.dp), if (on) Accent else TextLo)
+        Glyph(ico, Modifier.size(24.dp), if (on) TextHi else TextMute)
         Spacer(Modifier.height(3.dp))
-        Text(name, color = if (on) Accent else TextLo, style = MaterialTheme.typography.labelMedium, maxLines = 1)
+        Text(name, color = if (on) TextHi else TextMute, style = MaterialTheme.typography.labelMedium, maxLines = 1)
     }
 }
 
@@ -138,9 +146,9 @@ private fun NavRail(selected: Int, onSelect: (Int) -> Unit, onAbout: () -> Unit)
         horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
         ZyntavoMark(Modifier.size(38.dp))
-        Text("Zyntavo", color = TextHi, style = MaterialTheme.typography.labelMedium, maxLines = 1)
+        Text("Zyntavo", color = TextHi, style = wordmarkStyle.copy(fontSize = 15.sp), maxLines = 1)
         Spacer(Modifier.height(10.dp))
-        navItems.forEachIndexed { i, (ico, name) -> NavItem(ico, name, i == selected, { onSelect(i) }, Modifier.fillMaxWidth()) }
+        navItems.forEachIndexed { i, (ico, name) -> NavItem(ico, name, i == selected, { onSelect(i) }, Modifier.fillMaxWidth(), side = true) }
         Spacer(Modifier.weight(1f))
         NavItem(Ico.Info, "About", false, onAbout, Modifier.fillMaxWidth())
     }
@@ -151,8 +159,8 @@ private fun BottomNav(selected: Int, onSelect: (Int) -> Unit) {
     Row(
         Modifier.fillMaxWidth().background(Surface1)
             .drawBehind { drawLine(Line, Offset(0f, 0.5f), Offset(size.width, 0.5f), 1f) }
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
+            .padding(horizontal = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(0.dp)
     ) {
         navItems.forEachIndexed { i, (ico, name) -> NavItem(ico, name, i == selected, { onSelect(i) }, Modifier.weight(1f)) }
     }
@@ -174,6 +182,8 @@ fun Studio(ed: Editor) {
     val pick = rememberImagePicker { ed.load(it); tool = 0; msg = "" }
     val save = rememberImageSaver { msg = it }
     val hasImage = ed.shown != null
+    val detailKey = ed.detailKey()
+    LaunchedEffect(detailKey) { ed.refreshDetail() }
 
     val doCutout: () -> Unit = {
         val src = ed.original
@@ -207,7 +217,7 @@ fun Studio(ed: Editor) {
                 IconBtn(Ico.Undo, { ed.undo() }, ed.canUndo)
                 IconBtn(Ico.Redo, { ed.redo() }, ed.canRedo)
                 Spacer(Modifier.width(6.dp))
-                Button(enabled = hasImage, onClick = { ed.shown?.let { save(renderExport(it, ed.s, tm, density)) } }) { Text("Export") }
+                Button(enabled = hasImage, onClick = { ed.exportImage()?.let { save(renderExport(it, ed.s, tm, density)) } }) { Text("Export") }
             }
             if (msg.isNotEmpty()) Label(msg)
             if (busy) LinearProgressIndicator(Modifier.fillMaxWidth(), color = Accent, trackColor = Surface3)
@@ -257,7 +267,7 @@ private fun Modifier.checker(): Modifier = drawBehind {
 
 @Composable
 fun Preview(ed: Editor, tm: TextMeasurer, modifier: Modifier) {
-    val img = ed.shown
+    val img = if (ed.showOriginal) ed.shown else ed.image
     Box(modifier.glass(RoundedCornerShape(24.dp), 0.8f).padding(14.dp), contentAlignment = Alignment.Center) {
         if (img != null) {
             val o = outSize(img, ed.s)
@@ -267,7 +277,7 @@ fun Preview(ed: Editor, tm: TextMeasurer, modifier: Modifier) {
                 val h: Dp
                 if (ratio > maxWidth / maxHeight) { w = maxWidth; h = maxWidth / ratio } else { h = maxHeight; w = maxHeight * ratio }
                 Canvas(
-                    Modifier.size(w, h).clip(RoundedCornerShape(8.dp)).checker()
+                    Modifier.size(w, h).clip(RoundedCornerShape(2.dp)).checker()
                         .pointerInput(Unit) {
                             detectDragGestures(
                                 onDragStart = { p -> ed.pickText(p.x / size.width, p.y / size.height) },
@@ -282,10 +292,10 @@ fun Preview(ed: Editor, tm: TextMeasurer, modifier: Modifier) {
                 ) { drawEdits(img, ed.previewState(), tm, if (ed.showOriginal) null else ed.selected) }
             }
             Box(
-                Modifier.align(Alignment.TopEnd).padding(6.dp).clip(RoundedCornerShape(50)).background(Surface1.copy(alpha = 0.88f))
+                Modifier.align(Alignment.TopEnd).padding(6.dp).clip(RoundedCornerShape(6.dp)).background(Surface1.copy(alpha = 0.92f))
                     .clickable { ed.showOriginal = !ed.showOriginal }.padding(horizontal = 12.dp, vertical = 6.dp)
             ) {
-                Text(if (ed.showOriginal) "Original (tap to go back)" else "Compare", color = if (ed.showOriginal) Accent else TextHi, style = MaterialTheme.typography.labelMedium)
+                Text(if (ed.showOriginal) "Original (tap to go back)" else "Compare", color = TextHi, style = MaterialTheme.typography.labelMedium)
             }
         }
     }
@@ -310,10 +320,28 @@ private fun ToolControls(ed: Editor, tool: Int, busy: Boolean, onCutout: () -> U
                 OutlinedButton(onClick = { ed.set { it.copy(brightness = 0f, contrast = 1f, saturation = 1f, warmth = 0f, vignette = 0f, exposure = 0f, tint = 0f, hue = 0f, fade = 0f) } }) { Text("Reset") }
             }
         }
-        1 -> Chips {
-            photoFilterNames.forEachIndexed { i, n ->
-                FilterChip(selected = s.filter == i, onClick = { ed.set { it.copy(filter = i) } }, label = { Text(n) })
+        1 -> {
+            Label("Templates (shape, look and finishing in one tap)")
+            Chips { photoTemplates.forEach { t -> OutlinedButton(onClick = { ed.set { t.apply(it) } }) { Text(t.name) } } }
+            Label("Filters")
+            Chips {
+                photoFilterNames.forEachIndexed { i, n ->
+                    FilterChip(selected = s.filter == i, onClick = { ed.set { it.copy(filter = i) } }, label = { Text(n) })
+                }
             }
+        }
+        6 -> {
+            Param("Sharpen", s.sharpen, 0f..1f, "${(s.sharpen * 100).roundToInt()}%", { v -> ed.live { it.copy(sharpen = v) } }, { ed.end() })
+            Param("Blur", s.blur, 0f..1f, "${(s.blur * 100).roundToInt()}%", { v -> ed.live { it.copy(blur = v) } }, { ed.end() })
+            Param("Highlights", s.highlights, -1f..1f, "${(s.highlights * 100).roundToInt()}", { v -> ed.live { it.copy(highlights = v) } }, { ed.end() })
+            Param("Shadows", s.shadows, -1f..1f, "${(s.shadows * 100).roundToInt()}", { v -> ed.live { it.copy(shadows = v) } }, { ed.end() })
+            Param("Film grain", s.grain, 0f..1f, "${(s.grain * 100).roundToInt()}%", { v -> ed.live { it.copy(grain = v) } }, { ed.end() })
+            Param("Straighten", s.angle, -30f..30f, "${s.angle.roundToInt()}°", { v -> ed.live { it.copy(angle = v) } }, { ed.end() })
+            Label("Portrait blur: first remove the background in the Cutout tab, then blur what was behind the person.")
+            Param("Background blur", s.bgBlur, 0f..1f, "${(s.bgBlur * 100).roundToInt()}%", { v -> ed.live { it.copy(bgBlur = v) } }, { ed.end() })
+            if (ed.cutout == null && s.bgBlur > 0f) Label("There is no cutout yet, so this does nothing. Open the Cutout tab and tap Remove background.")
+            else if (ed.cutout != null && !s.cutout && s.bgBlur > 0f) Label("Turn on Show cutout in the Cutout tab to see the blur.")
+            OutlinedButton(onClick = { ed.set { it.copy(sharpen = 0f, blur = 0f, highlights = 0f, shadows = 0f, grain = 0f, angle = 0f, bgBlur = 0f) } }) { Text("Reset detail") }
         }
         2 -> {
             Label("Aspect ratio")

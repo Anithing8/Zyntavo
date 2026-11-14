@@ -10,6 +10,8 @@ The Kotlin source still lives in the package `com.zyntavo`. That is an internal 
 ## What it can do
 
 ### Photos
+- Sharpen, blur, highlights, shadows, film grain, straighten, and portrait blur (after removing the background)
+- Photo templates: Clean post, Polaroid, Cinematic, Retro film, Moody B&W, Bright and airy, Story, Soft dream
 - Adjust: brightness, contrast, saturation, warmth, tint, hue, exposure, fade, vignette, **Auto enhance**
 - 27 filters, including duotones and invert
 - Crop to a shape (1:1, 4:5, 3:4, 2:3, 3:2, 16:9, 9:16, 21:9, 5:4, 4:3, 3:1), rotate, flip both ways, border
@@ -17,6 +19,14 @@ The Kotlin source still lives in the package `com.zyntavo`. That is an internal 
 - Undo and redo, **Compare with the original**, **edit with a written prompt**, one-tap Quick looks
 
 ### Video
+- Reverse (any length), freeze frame, and speed ramps (Montage, Hero, Bullet, Speed up, Slow down)
+- Motion tracking: titles and overlays can follow an object
+- Beat finding, cut on the beat, auto-cut to the beat, and removing silences
+- Stabilise (Steady and Steady strong)
+- Green screen (chroma key) and shape masks (circle, rounded, heart, star) on overlay videos
+- Blurred background for tall and square video
+- Animated titles: fade, slide, pop and typewriter
+- Video templates: Vlog, Cinematic, Travel reel, Retro, Punchy short, Product promo, Moody portrait
 - Several clips on a timeline: add, trim, split, duplicate, delete, move
 - Speed from 0.25x to 4x, mirror, flip, crop, volume
 - 23 filters, and 8 effects: blur, sharpen, vignette, grain, denoise, pixelate, cinema bars, negative
@@ -55,13 +65,26 @@ only controls what the editor already has, and it works on the whole picture or 
 
 ## Not here yet
 
-- Reverse, freeze frame and speed curves
-- Green screen (chroma key), masks, motion tracking, stabilisation
-- Beat sync, auto-cut, templates, and stock music, video or effects libraries
+- Two-pass stabilisation
+- Stock music, video or effects libraries
 - Generative features, avatars, voice cloning
-- Animated text and a large text style library, stickers on video
-- Background blur canvas for tall video
+- A large text style library and stickers on video
 - Cloud projects, sharing and collaboration, keyboard shortcuts
+
+## Notes on the newer video tools
+
+These run in the full video engine. On a phone, a project that uses them is exported with the full engine even if
+the basic H.264 format is selected (the result is labelled). The one exception is Hindi text, which needs the basic
+engine for correct letter shaping; effects that need the full engine are skipped in that case and the export says so.
+
+- **Reverse** has no length limit. A long clip is reversed in parts that fit in memory and joined in reverse order.
+- **Stabilise** uses a single-pass filter that removes small shake only.
+- **Green screen** and **masks** work with every blend mode. The preview shows the key close to the export; the edges can differ a little.
+- **Motion tracking** follows a point you choose by comparing small patches of brightness from one frame to the next.
+  It works best on a spot with detail and steady lighting, and can lose an object that moves very fast or leaves the frame.
+- **Beats** and **silence removal** analyse the sound on your device with a small FFT written for this app. Beat finding
+  assumes a steady tempo.
+- **Typewriter titles** place the text from an estimate of its width, in the preview and in the export alike.
 
 ## Building
 

@@ -25,6 +25,22 @@ object FFmpeg {
         return ms to Regex("Stream #.*Audio:").containsMatchIn(text)
     }
 
+    /** Mono 16-bit samples of a stretch of a file, at the rate the beat finder uses. At most ten minutes. */
+    fun pcm(ffmpeg: String, ref: String, startMs: Long, durMs: Long): ShortArray? {
+        val cmd = mutableListOf(ffmpeg, "-v", "error")
+        if (startMs > 0) cmd += listOf("-ss", n(startMs / 1000.0))
+        cmd += listOf("-i", ref)
+        val dur = if (durMs in 1..600000) durMs else 600000L
+        cmd += listOf("-t", n(dur / 1000.0), "-vn", "-ac", "1", "-ar", "${Beats.RATE}", "-f", "s16le", "-")
+        val p = ProcessBuilder(cmd).redirectError(ProcessBuilder.Redirect.DISCARD).start()
+        val bytes = p.inputStream.readBytes()
+        p.waitFor()
+        if (bytes.size < 2) return null
+        val out = ShortArray(bytes.size / 2)
+        for (i in out.indices) out[i] = ((bytes[2 * i + 1].toInt() shl 8) or (bytes[2 * i].toInt() and 255)).toShort()
+        return out
+    }
+
     /** Refuses a GPL or non-free FFmpeg, so the app stays free to ship closed-source and commercially. */
     fun checkLicense(ffmpeg: String): String? {
         val p = ProcessBuilder(ffmpeg, "-hide_banner", "-version").redirectErrorStream(true).start()
@@ -159,9 +175,121 @@ object FFmpeg {
         return sb.toString()
     }
 
+    /** A position that follows a tracked object: straight lines between the points, written as an expression of time t. */
+    private fun trackExpr(pts: List<TrackPt>, pick: (TrackPt) -> Float): String {
+        var e = "(${f(pick(pts.last()))})"
+        for (i in pts.size - 2 downTo 0) {
+            val a = pts[i]
+            val b = pts[i + 1]
+            val ta = a.tMs / 1000.0
+            val tb = b.tMs / 1000.0
+            val va = f(pick(a))
+            val vb = f(pick(b))
+            e = "if(lt(t,${n(tb)}),($va)+(($vb)-($va))*(t-${n(ta)})/${n(max(0.001, tb - ta))},$e)"
+        }
+        return "if(lt(t,${n(pts.first().tMs / 1000.0)}),(${f(pick(pts.first()))}),$e)"
+    }
+
+    /** A reversed clip that is too long to hold in memory is cut into parts, each reversed on its own and played last part first. */
+    private fun expandReversed(clips: List<Clip>, limitMs: Long): List<Clip> {
+        val out = ArrayList<Clip>()
+        for (c in clips) {
+            if (!c.reverse || c.freeze || clipDur(c) <= limitMs) { out.add(c); continue }
+            val partSrc = max(500L, (limitMs * 0.8 * c.speed).toLong())
+            val parts = ArrayList<Pair<Long, Long>>()
+            var a = c.inMs
+            while (a < c.outMs) {
+                val b = min(a + partSrc, c.outMs)
+                parts.add(a to b)
+                a = b
+            }
+            if (parts.size > 1 && parts.last().second - parts.last().first < 200L) {
+                val last = parts.removeAt(parts.size - 1)
+                parts[parts.size - 1] = parts.last().first to last.second
+            }
+            parts.reversed().forEachIndexed { k, (x, y) ->
+                out.add(c.copy(inMs = x, outMs = y, trans = if (k == 0) c.trans else 0, keys = emptyList()))
+            }
+        }
+        return out
+    }
+
+    private val keyHexes = listOf("", "0x00B140", "0x0047BB")
+
+    /** Draws a shape mask as a small greyscale picture. FFmpeg scales it to the overlay and uses it as the alpha. */
+    private fun writeMaskPgm(file: File, shape: Int) {
+        if (file.exists()) return
+        val size = 384
+        val ss = 3
+        val data = ByteArray(size * size)
+        for (y in 0 until size) for (x in 0 until size) {
+            var hit = 0
+            for (sy in 0 until ss) for (sx in 0 until ss) {
+                if (maskInside(shape, (x + (sx + 0.5f) / ss) / size, (y + (sy + 0.5f) / ss) / size)) hit++
+            }
+            data[y * size + x] = (hit * 255 / (ss * ss)).toByte()
+        }
+        file.outputStream().use {
+            it.write("P5\n$size $size\n255\n".toByteArray(Charsets.US_ASCII))
+            it.write(data)
+        }
+    }
+
+    /** The drawtext filters for one title. Animated titles fade, slide or grow in with expressions of time; a typed title is a row of filters. */
+    private fun titleFilters(env: FfmpegEnv, work: File, k: Int, t: Title, W: Int, H: Int): List<String> {
+        val hex = (t.color.toArgb() and 0xFFFFFF).toString(16).padStart(6, '0')
+        val txt = wrap(t.text, fitChars(W, H, t.size, 40))
+        File(work, "t$k.txt").writeText(txt)
+        val st = t.startMs / 1000.0
+        val en = t.endMs / 1000.0
+        val dur = (en - st).coerceAtLeast(0.2)
+        val inD = min(0.45, dur / 3)
+        val outD = min(0.3, dur / 4)
+        val pIn = "clip((t-${n(st)})/${n(inD)},0,1)"
+        val ease = "(1-pow(1-$pIn,3))"
+        val alpha = "$pIn*clip((${n(en)}-t)/${n(outD)},0,1)"
+        val size = "h*${f(t.size)}"
+        val tracked = t.track.size >= 2
+        val xBase = if (tracked) "(${trackExpr(t.track) { it.x }})*w-text_w/2" else "(w-text_w)*${f(t.x)}"
+        val yBase = if (tracked) "(${trackExpr(t.track) { it.y }})*h-text_h/2" else "(h-text_h)*${f(t.y)}"
+        fun one(file: String, x: String, y: String, fontSize: String, a: String?, window: String): String =
+            "drawtext=fontfile='${env.fontFile}':textfile=$file:fontsize='$fontSize':fontcolor=0x$hex:x='$x':y='$y'" +
+                (if (a != null) ":alpha='$a'" else "") + ":borderw=2:bordercolor=black:enable='between(t,$window)'"
+        val whole = "${n(st)},${n(en)}"
+        return when (t.anim) {
+            1 -> listOf(one("t$k.txt", xBase, yBase, size, alpha, whole))
+            2 -> listOf(one("t$k.txt", xBase, "$yBase+(1-$ease)*h*0.06", size, alpha, whole))
+            3 -> listOf(one("t$k.txt", xBase, "$yBase-(1-$ease)*h*0.06", size, alpha, whole))
+            4 -> listOf(one("t$k.txt", "$xBase-(1-$ease)*w*0.25", yBase, size, alpha, whole))
+            5 -> listOf(one("t$k.txt", xBase, yBase, "$size*(0.5+0.5*$ease)", alpha, whole))
+            6 -> {
+                // Letters appear one after another. Each step is the text so far, drawn from the same left edge.
+                val len = txt.length
+                val steps = min(max(len, 1), 60)
+                val step = min(0.08, dur * 0.6 / steps)
+                val estW = widestLineEm(txt) * t.size * H
+                val xAnchor = if (tracked) "(${trackExpr(t.track) { it.x }})*w-${n(estW)}/2" else "(w-${n(estW)})*${f(t.x)}"
+                val out = ArrayList<String>()
+                for (idx in 1..steps) {
+                    val cnt = (len * idx + steps - 1) / steps
+                    val part = txt.take(cnt).trimEnd()
+                    if (part.isBlank()) continue
+                    val name = "tw${k}_$idx.txt"
+                    File(work, name).writeText(part)
+                    val from = st + (idx - 1) * step
+                    val to = if (idx == steps) en else st + idx * step
+                    out += one(name, xAnchor, yBase, size, null, "${n(from)},${n(to)}")
+                }
+                out
+            }
+            else -> listOf(one("t$k.txt", xBase, yBase, size, null, whole))
+        }
+    }
+
     /** Returns a short name of the video format that was written. */
-    fun export(env: FfmpegEnv, p: VideoProject, work: File, out: File, onProgress: (Float) -> Unit): String {
+    fun export(env: FfmpegEnv, source: VideoProject, work: File, out: File, onProgress: (Float) -> Unit): String {
         checkLicense(env.ffmpeg)?.let { throw RuntimeException(it) }
+        val p = source.copy(clips = expandReversed(source.clips, reverseLimitMs(source.settings)))
         val (W, H) = frameSize(p.settings.res, p.settings.aspect)
         val fps = p.settings.fps
         val side = (ceil(hypot(W.toDouble(), H.toDouble()) / 2.0) * 2).toInt()
@@ -186,13 +314,35 @@ object FFmpeg {
             val gainExpr = if (c.gain != 1f) "volume=${f(c.gain)}," else ""
             val volExpr = if (c.keys.any { it.vol != 1f }) "volume=volume='${kfExpr(c.keys, c.ease) { it.vol }}':eval=frame," else ""
 
-            g.append("[$i:v]trim=start=$s:end=$e,setpts=(PTS-STARTPTS)/${f(c.speed)}")
+            if (c.freeze) {
+                // One picture, held: take the first frame at the chosen time and repeat it.
+                val s0 = c.inMs / 1000.0
+                g.append("[$i:v]trim=start=${n(s0)}:end=${n(s0 + 0.3)},setpts=PTS-STARTPTS,trim=end_frame=1,tpad=stop_mode=clone:stop_duration=${n(d + 1.0)},trim=end=${n(d)},setpts=PTS-STARTPTS")
+            } else {
+                g.append("[$i:v]trim=start=$s:end=$e,setpts=(PTS-STARTPTS)/${f(c.speed)}")
+                if (c.stab > 0) {
+                    val r = if (c.stab > 1) 48 else 20
+                    g.append(",deshake=rx=$r:ry=$r:edge=mirror")
+                }
+            }
             if (c.cropX > 0f || c.cropY > 0f) {
                 val cx = f(c.cropX)
                 val cy = f(c.cropY)
                 g.append(",crop=iw*(1-2*$cx):ih*(1-2*$cy):iw*$cx:ih*$cy")
             }
-            g.append(",scale=$W:$H:force_original_aspect_ratio=decrease,pad=$W:$H:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=$fps")
+            if (p.settings.blurBg) {
+                // A blurred, darker copy of the picture fills the frame; the sharp picture sits on top of it.
+                val bw = max(16, W / 6 / 2 * 2)
+                val bh = max(16, H / 6 / 2 * 2)
+                g.append(",split[sa$i][sb$i];")
+                g.append("[sa$i]scale=$bw:$bh:force_original_aspect_ratio=increase,crop=$bw:$bh,gblur=sigma=4:steps=2,scale=$W:$H:flags=bicubic${grade(-0.1f, 1f, 1f)}[bk$i];")
+                g.append("[sb$i]scale=$W:$H:force_original_aspect_ratio=decrease[fg$i];")
+                g.append("[bk$i][fg$i]overlay=x='(W-w)/2':y='(H-h)/2'")
+                g.append(",setsar=1,fps=$fps")
+            } else {
+                g.append(",scale=$W:$H:force_original_aspect_ratio=decrease,pad=$W:$H:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=$fps")
+            }
+            if (c.reverse && !c.freeze) g.append(",reverse,setpts=PTS-STARTPTS")
             g.append(grade(c.brightness, c.contrast, c.saturation))
             g.append(filterOf(c.filter))
             g.append(fxOf(c.fx, W, H))
@@ -215,8 +365,8 @@ object FFmpeg {
             } else {
                 g.append("$fadeV,format=yuv420p[v$i];")
             }
-            if (c.src.hasAudio) {
-                g.append("[$i:a]atrim=start=$s:end=$e,asetpts=PTS-STARTPTS,${atempo(c.speed)}$gainExpr$volExpr${fadeA}aformat=sample_rates=44100:channel_layouts=stereo[a$i];")
+            if (c.src.hasAudio && !c.freeze) {
+                g.append("[$i:a]atrim=start=$s:end=$e,asetpts=PTS-STARTPTS,${if (c.reverse) "areverse," else ""}${atempo(c.speed)}$gainExpr$volExpr${fadeA}aformat=sample_rates=44100:channel_layouts=stereo[a$i];")
             } else {
                 g.append("anullsrc=r=44100:cl=stereo,atrim=duration=${n(d)}[a$i];")
             }
@@ -254,15 +404,40 @@ object FFmpeg {
             val crop = if (o.cropX > 0f || o.cropY > 0f) ",crop=iw*(1-2*$cx):ih*(1-2*$cy):iw*$cx:ih*$cy" else ""
             val ox = f(o.x)
             val oy = f(o.y)
-            g.append("[$ix:v]trim=start=$s:end=$e,setpts=PTS-STARTPTS$crop,scale=w='trunc($W*${f(o.scale)}/2)*2':h=-2,fps=$fps")
+            val masked = o.mask > 0
+            val keyed = o.key > 0
+            val side = (((W * o.scale) / 2f).toInt() * 2).coerceAtLeast(16)
+            g.append("[$ix:v]trim=start=$s:end=$e,setpts=PTS-STARTPTS$crop")
+            if (masked) g.append(",scale=$side:$side:force_original_aspect_ratio=increase,crop=$side:$side")
+            else g.append(",scale=w='trunc($W*${f(o.scale)}/2)*2':h=-2")
+            g.append(",fps=$fps")
+            if (keyed) g.append(",chromakey=color=${keyHexes[o.key.coerceIn(1, 2)]}:similarity=${f(o.keySim)}:blend=0.08")
+            if (masked) {
+                val mf = File(work, "mask${o.mask}.pgm")
+                writeMaskPgm(mf, o.mask)
+                val mi = nIn++
+                cmd += listOf("-loop", "1", "-framerate", "$fps", "-t", n((o.outMs - o.inMs) / 1000.0 + 0.5), "-i", mf.absolutePath)
+                g.append(",format=rgba[om$j];[$mi:v]scale=$side:$side,format=gray[mk$j];[om$j][mk$j]alphamerge")
+            }
             if (o.blend == 0) {
                 g.append(",format=rgba,colorchannelmixer=aa=${f(o.opacity)},setpts=PTS+${n(st)}/TB[ol$j];")
-                g.append("[$base][ol$j]overlay=x='(W-w)/2+$ox*W':y='(H-h)/2+$oy*H':eof_action=pass:enable='between(t,${n(st)},${n(en)})':format=auto[ob$j];")
-            } else {
+                val tracked = o.track.size >= 2
+                val px = if (tracked) "(W-w)/2+((${trackExpr(o.track) { it.x }})-0.5)*W" else "(W-w)/2+$ox*W"
+                val py = if (tracked) "(H-h)/2+((${trackExpr(o.track) { it.y }})-0.5)*H" else "(H-h)/2+$oy*H"
+                g.append("[$base][ol$j]overlay=x='$px':y='$py':eof_action=pass:enable='between(t,${n(st)},${n(en)})':format=auto[ob$j];")
+            } else if (!keyed && !masked) {
                 val pad = if (o.blend == 4 || o.blend == 5) "white" else "black"
                 g.append(",format=yuv420p,pad=$W:$H:x='(ow-iw)/2+$ox*ow':y='(oh-ih)/2+$oy*oh':color=$pad,")
                 g.append("tpad=start_mode=add:start_duration=${n(st)}:color=$pad,tpad=stop_mode=add:stop_duration=600:color=$pad[ol$j];")
                 g.append("[$base][ol$j]blend=all_mode=${blendModes[o.blend]}:all_opacity=${f(o.opacity)}:shortest=1[ob$j];")
+            } else {
+                // A blend mode with a key or a mask: blend the whole frame, then let the overlay's own transparency decide where the blend shows.
+                g.append(",format=rgba,pad=$W:$H:x='(ow-iw)/2+$ox*ow':y='(oh-ih)/2+$oy*oh':color=black@0,")
+                g.append("tpad=start_mode=add:start_duration=${n(st)}:color=black@0,tpad=stop_mode=add:stop_duration=600:color=black@0,split[lc$j][la$j];")
+                g.append("[la$j]alphaextract[am$j];[lc$j]format=yuv420p[lf$j];")
+                g.append("[$base]format=yuv420p,split[bs$j][bt$j];")
+                g.append("[bs$j][lf$j]blend=all_mode=${blendModes[o.blend]}:all_opacity=${f(o.opacity)}:shortest=1[bl$j];")
+                g.append("[bt$j][bl$j][am$j]maskedmerge=shortest=1[ob$j];")
             }
             base = "ob$j"
             if (o.src.hasAudio) {
@@ -284,13 +459,7 @@ object FFmpeg {
         g.append("[$mixed]${if (fx.isEmpty()) "anull" else fx}[aout];")
 
         val chain = mutableListOf<String>()
-        p.titles.forEachIndexed { k, t ->
-            File(work, "t$k.txt").writeText(wrap(t.text, fitChars(W, H, t.size, 40)))
-            val hex = (t.color.toArgb() and 0xFFFFFF).toString(16).padStart(6, '0')
-            chain += "drawtext=fontfile='${env.fontFile}':textfile=t$k.txt:fontsize=h*${f(t.size)}:fontcolor=0x$hex" +
-                ":x=(w-text_w)*${f(t.x)}:y=(h-text_h)*${f(t.y)}:borderw=2:bordercolor=black" +
-                ":enable='between(t,${n(t.startMs / 1000.0)},${n(t.endMs / 1000.0)})'"
-        }
+        p.titles.forEachIndexed { k, t -> chain += titleFilters(env, work, k, t, W, H) }
         if (p.captions.isNotEmpty()) {
             val st = p.captionStyle
             if (env.useSubtitles) {

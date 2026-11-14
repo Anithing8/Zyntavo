@@ -27,7 +27,9 @@ val promptIdeas = listOf(
     "fix the colours",
     "add text \"Summer\" at the top in yellow, big",
     "add a heart sticker",
-    "rotate left and flip"
+    "rotate left and flip",
+    "sharpen and add film grain",
+    "blur the background"
 )
 
 val videoPromptIdeas = listOf(
@@ -42,7 +44,12 @@ val videoPromptIdeas = listOf(
     "add title \"My trip\" at the bottom for 4 seconds",
     "1080p 60 fps high quality",
     "robot voice",
-    "mirror all clips"
+    "mirror all clips",
+    "reverse this clip",
+    "freeze frame for 3 seconds",
+    "stabilize",
+    "speed ramp bullet",
+    "blurred background"
 )
 
 /** One-tap looks for photos: a name and the prompt it runs. */
@@ -118,6 +125,8 @@ object Prompt {
         "happy" to "\uD83D\uDE00", "party" to "\uD83C\uDF89", "confetti" to "\uD83C\uDF89", "thumbs" to "\uD83D\uDC4D", "sparkle" to "\u2728", "sparkles" to "\u2728"
     )
     private val commandWords = setOf(
+        "reverse", "backwards", "rewind", "freezeframe", "freeze", "stabilize", "stabilise", "stabilization", "stabilisation", "steady", "deshake",
+        "speedramp", "ramp", "montage", "hero", "bullet", "blurbg",
         "slowmo", "speedup", "slowdown", "timelapse", "hyperlapse", "rotate", "flip", "mirror", "zoom", "closer", "wider", "volume", "louder", "quieter", "mute",
         "border", "frame", "square", "portrait", "landscape", "widescreen", "ultrawide", "split", "trim", "delete", "duplicate", "transition", "transitions", "dissolve", "crossfade",
         "kenburns", "fadein", "fadeout", "popin", "subtitles", "captions", "sticker", "emoji", "brightness", "contrast", "saturation", "vignette", "exposure", "highquality",
@@ -125,6 +134,10 @@ object Prompt {
     )
 
     private val phrases = listOf(
+        "blur the background" to "blurbg", "blurred background" to "blurbg", "blur background" to "blurbg", "background blur" to "blurbg",
+        "blurry background" to "blurbg", "portrait blur" to "blurbg", "portrait mode" to "blurbg",
+        "freeze frame" to "freezeframe", "freeze-frame" to "freezeframe", "speed ramp" to "speedramp", "speed-ramp" to "speedramp",
+        "play backwards" to "reverse", "play it backwards" to "reverse",
         "black and white" to "monochrome", "black & white" to "monochrome", "b&w" to "monochrome", "b & w" to "monochrome",
         "grey scale" to "monochrome", "gray scale" to "monochrome",
         "slow motion" to "slowmo", "slow-mo" to "slowmo", "slow mo" to "slowmo", "time lapse" to "timelapse", "time-lapse" to "timelapse",
@@ -534,6 +547,29 @@ object Prompt {
         if (t.contains("popin")) out.add(PromptAction("anim", 0f, "Pop in", "pop"))
         if (t.contains("noanim")) out.add(PromptAction("anim", 0f, "Remove animation", "clear"))
 
+        // ----- reverse, freeze frame, stabilise, speed ramps, blurred background -----
+        if (t.contains("reverse") || t.contains("backwards") || t.contains("rewind")) {
+            out.add(act("reverse", if (remove) 0f else 1f, if (remove) "Play forwards" else "Reverse"))
+        }
+        if (t.contains("freezeframe") || t.contains("freeze")) {
+            val args = if (sec != null) mapOf("dur" to sec.toString()) else emptyMap()
+            out.add(PromptAction("freeze", 1f, "Freeze frame", "", false, args))
+        }
+        if (t.any { it == "stabilize" || it == "stabilise" || it == "stabilization" || it == "stabilisation" || it == "steady" || it == "deshake" }) {
+            out.add(act("stab", if (remove) 0f else if (strength > 1.5f) 2f else 1f, if (remove) "Stabilise off" else "Stabilise"))
+        }
+        if (t.contains("speedramp") || t.contains("ramp")) {
+            val kind = when {
+                t.contains("hero") -> 1
+                t.contains("bullet") -> 2
+                t.contains("speedup") -> 3
+                t.contains("slowdown") -> 4
+                else -> 0
+            }
+            out.add(act("ramp", kind.toFloat(), "Speed ramp: " + rampNames[kind]))
+        }
+        if (t.contains("blurbg")) out.add(act("blurbg", if (remove) 0f else 1f, if (remove) "Blurred background off" else "Blurred background"))
+
         // ----- export, captions and voice -----
         val resM = resRe.find(clause)
         if (resM != null) {
@@ -758,7 +794,24 @@ object PromptApply {
                 "speed", "gain", "mute", "zoom" -> if (!a.soft) note("Speed, volume and zoom work on video clips.")
                 "trimstart", "trimend", "keep", "keeplast", "speedpart", "transition", "anim", "split", "delete", "duplicate", "move", "res", "fps", "quality", "captions", "voicefx" ->
                     if (!a.soft) note("Trimming, splitting, transitions, animations, voice and export settings work in the Video section.")
-                "fx", "fxoff" -> if (!a.soft) note(a.label + " works on video clips. Photos do not have that effect yet.")
+                "fx" -> {
+                    val bits = a.value.toInt()
+                    if (bits and 1 != 0) st = st.copy(blur = 0.3f)
+                    if (bits and 2 != 0) st = st.copy(sharpen = (st.sharpen + 0.5f).coerceAtMost(1f))
+                    if (bits and 8 != 0) st = st.copy(grain = (st.grain + 0.35f).coerceAtMost(1f))
+                    if (bits and (1 or 2 or 8).inv() != 0 && !a.soft) note(a.label + " works on video clips. Photos support blur, sharpen and grain.")
+                }
+                "fxoff" -> {
+                    val bits = a.value.toInt()
+                    if (bits and 1 != 0) st = st.copy(blur = 0f)
+                    if (bits and 2 != 0) st = st.copy(sharpen = 0f)
+                    if (bits and 8 != 0) st = st.copy(grain = 0f)
+                }
+                "blurbg" -> {
+                    st = st.copy(bgBlur = if (a.value > 0f) 0.6f else 0f)
+                    if (a.value > 0f) note("Portrait blur shows once the background is removed in the Cutout tab and Show cutout is on.")
+                }
+                "reverse", "freeze", "stab", "ramp" -> if (!a.soft) note("Reverse, freeze frame, stabilise and speed ramps work on video clips.")
                 else -> {}
             }
         }
@@ -825,6 +878,8 @@ object PromptApply {
                 "fxoff" -> {
                     if (full) cl = cl.copy(fx = cl.fx and a.value.toInt().inv()) else note("Effects need the full video engine.")
                 }
+                "reverse" -> if (full) cl = cl.copy(reverse = a.value > 0f && !cl.freeze) else note("Reverse needs the full video engine.")
+                "stab" -> if (full) cl = cl.copy(stab = a.value.toInt().coerceIn(0, 2)) else note("Stabilise needs the full video engine.")
                 "rotate", "ratio", "frame" -> if (!a.soft) note("Rotating and borders work on photos. The shape of a video is chosen in the Export tab.")
                 "sticker" -> note("Stickers work on photos.")
                 "trimstart" -> {

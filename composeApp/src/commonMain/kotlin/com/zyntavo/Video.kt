@@ -16,6 +16,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -23,6 +24,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -34,13 +36,16 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.ln
 import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.roundToInt
 
 data class Source(val ref: String, val name: String, val durationMs: Long, val hasAudio: Boolean)
@@ -52,22 +57,48 @@ data class Clip(
     val mirror: Boolean = false, val flipV: Boolean = false, val cropX: Float = 0f, val cropY: Float = 0f,
     val gain: Float = 1f, val fx: Int = 0,
     val trans: Int = 0, val transMs: Long = 600L,
-    val ease: Int = 1, val keys: List<Keyframe> = emptyList()
+    val ease: Int = 1, val keys: List<Keyframe> = emptyList(),
+    /** Plays backwards. */
+    val reverse: Boolean = false,
+    /** A single picture held for the length of the clip. */
+    val freeze: Boolean = false,
+    /** 0 off, 1 normal, 2 strong steadying. */
+    val stab: Int = 0
 )
 
 data class Loc(val i: Int, val srcMs: Long, val localMs: Long)
-data class Title(val text: String, val startMs: Long, val endMs: Long, val x: Float, val y: Float, val size: Float, val color: Color)
+data class Title(val text: String, val startMs: Long, val endMs: Long, val x: Float, val y: Float, val size: Float, val color: Color, val anim: Int = 0, val track: List<TrackPt> = emptyList())
+
+val titleAnimNames = listOf("None", "Fade", "Slide up", "Slide down", "Slide in", "Pop", "Typewriter")
 
 data class Overlay(
     val src: Source, val inMs: Long, val outMs: Long, val startMs: Long,
     val x: Float = 0.3f, val y: Float = -0.3f, val scale: Float = 0.35f, val opacity: Float = 1f,
-    val blend: Int = 0, val cropX: Float = 0f, val cropY: Float = 0f
+    val blend: Int = 0, val cropX: Float = 0f, val cropY: Float = 0f,
+    /** Green screen: 0 off, 1 green, 2 blue. */
+    val key: Int = 0, val keySim: Float = 0.3f,
+    /** Shape the overlay is cut into (see maskNames). */
+    val mask: Int = 0,
+    /** Where an object it follows moves; empty when it stays where it is. */
+    val track: List<TrackPt> = emptyList()
 )
 
 /** A voiceover or music file mixed into the sound. */
 data class Voice(val text: String, val startMs: Long, val wav: String, val durMs: Long, val vol: Float = 1f)
 
-data class ExportSettings(val res: Int = 1, val fps: Int = 30, val crf: Int = 20, val basic: Boolean = false, val aspect: Int = 0)
+data class ExportSettings(val res: Int = 1, val fps: Int = 30, val crf: Int = 20, val basic: Boolean = false, val aspect: Int = 0, val blurBg: Boolean = false)
+
+/** True if the project uses something only the full FFmpeg engine can draw. */
+fun usesFullFeatures(p: VideoProject): Boolean =
+    p.settings.blurBg || p.clips.any { it.reverse || it.freeze || it.stab > 0 } ||
+        p.overlays.any { it.key > 0 || it.mask > 0 || it.track.isNotEmpty() } || p.titles.any { it.anim > 0 || it.track.isNotEmpty() }
+
+/** A reversed clip is reversed in parts no longer than this, so it never needs more than about 500 MB of memory. */
+fun reverseLimitMs(s: ExportSettings): Long {
+    val (w, h) = frameSize(s.res, s.aspect)
+    val bytesPerSecond = w.toDouble() * h * 1.5 * s.fps
+    return (500e6 / bytesPerSecond * 1000.0).toLong()
+}
 
 /** The shapes the video can be exported in. */
 val aspectNames = listOf("16:9 wide", "9:16 tall", "1:1 square", "4:5 portrait")
@@ -106,6 +137,15 @@ val blendModes = listOf("normal", "screen", "addition", "lighten", "multiply", "
 val voiceFxNames = listOf("None", "Clean voice", "Telephone", "Robot", "Chipmunk", "Deep")
 val fxNames = listOf("Blur", "Sharpen", "Vignette", "Grain", "Denoise", "Pixelate", "Cinema bars", "Negative")
 val cutoutColors = intArrayOf(0x00B140, 0x0047BB, 0xFFFFFF, 0x000000)
+
+val rampNames = listOf("Montage", "Hero", "Bullet", "Speed up", "Slow down")
+private val rampCurves = listOf(
+    floatArrayOf(2f, 2.5f, 1.5f, 0.6f, 0.4f, 0.4f, 0.6f, 1.5f, 2.5f, 2f),
+    floatArrayOf(1f, 1f, 0.8f, 0.5f, 0.3f, 0.3f, 0.5f, 0.8f, 1f, 1f),
+    floatArrayOf(2f, 2f, 1.2f, 0.5f, 0.25f, 0.25f, 0.5f, 1.2f, 2f, 2f),
+    floatArrayOf(0.5f, 0.5f, 0.75f, 1f, 1.5f, 2f, 2.5f, 3f, 3.5f, 4f),
+    floatArrayOf(4f, 3.5f, 3f, 2.5f, 2f, 1.5f, 1f, 0.75f, 0.5f, 0.5f)
+)
 
 private val speeds = listOf(0.25f, 0.5f, 0.75f, 1f, 1.5f, 2f, 3f, 4f)
 private val resNames = listOf("480p", "720p", "1080p")
@@ -208,6 +248,10 @@ class VideoModel {
         if (clips.isEmpty()) return
         val i = selClip.coerceIn(0, clips.lastIndex)
         val c = clips[i]
+        if (c.reverse || c.freeze) {
+            notes.add("A reversed or frozen clip cannot be split by time in a prompt.")
+            return
+        }
         val sec = a.args["sec"]?.toFloatOrNull() ?: return
         val span = (sec * 1000f * c.speed).toLong()
         val fromEnd = a.args["from"] == "last"
@@ -226,6 +270,169 @@ class VideoModel {
             clips.add(i + 1, c.copy(inMs = t, trans = 0, keys = emptyList()))
             selClip = i
         }
+    }
+
+    // ---------- following an object ----------
+
+    var trackX by mutableStateOf(0.5f)
+    var trackY by mutableStateOf(0.5f)
+    var showCross by mutableStateOf(false)
+
+    /** Follows the point (trackX, trackY) from [fromMs] to [toMs] on the timeline. Returns null if no picture could be read. */
+    suspend fun trackFrom(fromMs: Long, toMs: Long): List<TrackPt>? {
+        val oa = frameRatio(settings)
+        val span = max(1L, toMs - fromMs)
+        val step = max(150L, span / 50L)
+        val times = ArrayList<Long>()
+        var at = fromMs
+        while (at < toMs) { times.add(at); at += step }
+        times.add(toMs)
+        var prev: Gray? = null
+        var px = 0
+        var py = 0
+        val raw = ArrayList<TrackPt>()
+        for ((n, tl) in times.withIndex()) {
+            val loc = locate(tl) ?: break
+            val c = clips.getOrNull(loc.i) ?: break
+            val img = frameAt(c.src, loc.srcMs) ?: break
+            val g = Tracker.gray(img)
+            val fa = img.width.toFloat() / img.height.toFloat()
+            val before = prev
+            if (before == null) {
+                val (sx, sy) = Tracker.outToSrc(c, fa, oa, trackX, trackY)
+                px = (sx * g.w).toInt().coerceIn(0, g.w - 1)
+                py = (sy * g.h).toInt().coerceIn(0, g.h - 1)
+            } else {
+                val r = Tracker.search(before, px, py, g)
+                px = r.first
+                py = r.second
+            }
+            prev = g
+            val (ox, oy) = Tracker.srcToOut(c, fa, oa, (px + 0.5f) / g.w, (py + 0.5f) / g.h)
+            raw.add(TrackPt(tl, ox.coerceIn(0f, 1f), oy.coerceIn(0f, 1f)))
+            progress = (n + 1f) / times.size
+        }
+        if (raw.size < 2) return null
+        return raw.mapIndexed { i, pt ->
+            if (i == 0 || i == raw.lastIndex) pt
+            else TrackPt(pt.tMs, (raw[i - 1].x + 2 * pt.x + raw[i + 1].x) / 4f, (raw[i - 1].y + 2 * pt.y + raw[i + 1].y) / 4f)
+        }
+    }
+
+    // ---------- beats and auto-cut ----------
+
+    var beats by mutableStateOf<List<Long>>(emptyList())
+    var beatInfo by mutableStateOf("")
+    var beatEvery by mutableStateOf(1)
+
+    /** Finds the beats of a music track (an index of [voices]) or, when [voice] is negative, of the sound of the selected clip. */
+    suspend fun findBeats(voice: Int) {
+        val pcm: ShortArray?
+        val offset: Long
+        val speed: Float
+        if (voice >= 0) {
+            val v = voices.getOrNull(voice) ?: return
+            pcm = decodeAudioMono(v.wav, 0L, v.durMs)
+            offset = v.startMs
+            speed = 1f
+        } else {
+            val i = selClip
+            val c = clips.getOrNull(i) ?: return
+            if (!c.src.hasAudio || c.freeze || c.reverse) { beatInfo = "This clip has no sound to listen to."; return }
+            pcm = decodeAudioMono(c.src.ref, c.inMs, c.outMs - c.inMs)
+            offset = clipStarts(clips)[i]
+            speed = c.speed
+        }
+        if (pcm == null) { beatInfo = "Could not read the sound."; return }
+        val r = withContext(Dispatchers.Default) { Beats.detect(pcm) }
+        if (r == null) { beatInfo = "No clear beat found."; beats = emptyList(); return }
+        beats = r.beatsMs.map { offset + (it / speed).toLong() }.filter { it >= 0L }
+        beatInfo = "${r.bpm.roundToInt()} BPM, ${beats.size} beats found."
+    }
+
+    private fun splitAt(ms: Long): Boolean {
+        val loc = locate(ms) ?: return false
+        val c = clips[loc.i]
+        if (c.freeze || c.reverse) return false
+        val t = loc.srcMs
+        if (t <= c.inMs + 150L || t >= c.outMs - 150L) return false
+        clips[loc.i] = c.copy(outMs = t)
+        clips.add(loc.i + 1, c.copy(inMs = t, trans = 0, keys = emptyList()))
+        return true
+    }
+
+    /** Splits the clips on every beat (or every second or fourth beat). */
+    fun cutAtBeats() {
+        if (beats.isEmpty() || clips.isEmpty()) return
+        val end = total()
+        var n = 0
+        beats.filterIndexed { i, _ -> i % beatEvery == 0 }.forEach { b -> if (b in 1 until end && splitAt(b)) n++ }
+        status = if (n > 0) "Cut the clips at $n beats." else "No beat fell inside a clip."
+    }
+
+    /** Builds a new edit of short shots from all clips, spread across the footage, with a new shot on every beat. */
+    fun autoCutToBeats() {
+        val pool = clips.filter { !it.freeze && !it.reverse }
+        if (beats.size < 4 || pool.isEmpty()) { status = "Find the beats of a music track first."; return }
+        val bounds = ArrayList<Long>()
+        bounds.add(0L)
+        beats.forEachIndexed { i, t -> if (i % beatEvery == 0 && t > bounds.last() + 250L) bounds.add(t) }
+        val cut = bounds.take(201)
+        val shots = cut.size - 1
+        if (shots < 2) { status = "Too few beats to cut on."; return }
+        val footage = pool.sumOf { it.outMs - it.inMs }
+        val out = ArrayList<Clip>()
+        for (k in 0 until shots) {
+            val dur = cut[k + 1] - cut[k]
+            var pos = footage * k / shots
+            var c = pool[0]
+            for (cand in pool) {
+                c = cand
+                val len = cand.outMs - cand.inMs
+                if (pos < len) break
+                pos -= len
+            }
+            val len = c.outMs - c.inMs
+            val want = (dur * c.speed).toLong().coerceAtLeast(200L)
+            val take = min(want, len)
+            val start = (c.inMs + pos).coerceAtMost(c.outMs - take)
+            val sp = if (take < want) (take.toFloat() / dur).coerceIn(0.25f, 4f) else c.speed
+            out.add(c.copy(inMs = start, outMs = start + take, speed = sp, trans = 0, keys = emptyList()))
+        }
+        clips.clear()
+        clips.addAll(out)
+        selClip = 0
+        playMs = 0f
+        status = "Made $shots shots that change on the beat."
+    }
+
+    /** Cuts the long quiet parts out of the selected clip, keeping a little room around the speech. */
+    suspend fun removeSilences(thresholdDb: Double) {
+        val i = selClip
+        val c = clips.getOrNull(i) ?: return
+        if (!c.src.hasAudio || c.freeze || c.reverse) { status = "This clip has no sound to listen to."; return }
+        val pcm = decodeAudioMono(c.src.ref, c.inMs, c.outMs - c.inMs)
+        if (pcm == null) { status = "Could not read the sound."; return }
+        val quiet = withContext(Dispatchers.Default) { Beats.silences(pcm, thresholdDb, 600L) }
+        val pad = 120L
+        val cuts = quiet.map { (a, b) -> (a + pad) to (b - pad) }.filter { it.second - it.first >= 250L }
+        if (cuts.isEmpty()) { status = "No long quiet parts found."; return }
+        val parts = ArrayList<Clip>()
+        var from = c.inMs
+        for ((a, b) in cuts) {
+            val x = c.inMs + a
+            val y = c.inMs + b
+            if (x - from >= 200L) parts.add(c.copy(inMs = from, outMs = x, trans = if (parts.isEmpty()) c.trans else 0, keys = emptyList()))
+            from = y
+        }
+        if (c.outMs - from >= 200L) parts.add(c.copy(inMs = from, outMs = c.outMs, trans = if (parts.isEmpty()) c.trans else 0, keys = emptyList()))
+        if (parts.isEmpty()) { status = "The clip is all quiet, so nothing was cut."; return }
+        val removed = cuts.sumOf { it.second - it.first }
+        clips.removeAt(i)
+        clips.addAll(i, parts)
+        selClip = i
+        playMs = playMs.coerceAtMost(max(0L, total()).toFloat())
+        status = "Cut out ${removed / 100 / 10.0} seconds of silence."
     }
 
     /** Does what the written prompt says: cutting the timeline, the clips, titles, captions, voice and export settings. */
@@ -316,6 +523,15 @@ class VideoModel {
                         notes.add("Tall and square video needs the full video engine.")
                     }
                 }
+                "freeze" -> {
+                    flush()
+                    freezeFrame(((a.args["dur"]?.toFloatOrNull() ?: 2f) * 1000f).toLong().coerceIn(500L, 8000L))
+                }
+                "ramp" -> {
+                    flush()
+                    speedRamp(a.value.toInt())
+                }
+                "blurbg" -> if (fullEngine) settings = settings.copy(blurBg = a.value > 0f) else notes.add("Blurred background needs the full video engine.")
                 "scope" -> {}
                 else -> batch.add(a)
             }
@@ -431,7 +647,13 @@ class VideoModel {
             if (ms >= st[i]) {
                 val c = clips[i]
                 val local = (ms - st[i]).coerceIn(0, clipDur(c))
-                return Loc(i, c.inMs + (local * c.speed).toLong(), local)
+                val off = (local * c.speed).toLong()
+                val srcMs = when {
+                    c.freeze -> c.inMs
+                    c.reverse -> (c.outMs - off).coerceAtLeast(c.inMs)
+                    else -> c.inMs + off
+                }
+                return Loc(i, srcMs, local)
             }
         }
         return Loc(0, clips[0].inMs, 0)
@@ -440,10 +662,80 @@ class VideoModel {
     fun split() {
         val (i, t) = locate(playMs.toLong()) ?: return
         val c = clips[i]
+        if (c.freeze) { status = "A frozen frame cannot be split. Change how long it is held instead."; return }
         if (t <= c.inMs + 200 || t >= c.outMs - 200) { status = "Move the playhead inside a clip to split it."; return }
-        clips[i] = c.copy(outMs = t)
-        clips.add(i + 1, c.copy(inMs = t))
+        if (c.reverse) {
+            // A reversed clip plays from its end to its start, so the part after the cut is the earlier part of the source.
+            clips[i] = c.copy(inMs = t)
+            clips.add(i + 1, c.copy(outMs = t))
+        } else {
+            clips[i] = c.copy(outMs = t)
+            clips.add(i + 1, c.copy(inMs = t))
+        }
         selClip = i + 1
+    }
+
+    /** Turns the selected clip around. Long clips are reversed in parts by the export, so there is no length limit. */
+    fun toggleReverse() {
+        val i = selClip
+        val c = clips.getOrNull(i) ?: return
+        if (c.freeze) { status = "A frozen frame has nothing to reverse."; return }
+        clips[i] = c.copy(reverse = !c.reverse)
+    }
+
+    /** Holds the picture under the playhead for a while, splitting the clip around it. */
+    fun freezeFrame(durMs: Long = 2000L) {
+        val loc = locate(playMs.toLong()) ?: return
+        val i = loc.i
+        val c = clips[i]
+        if (c.reverse) { status = "Freeze works on a clip that is not reversed."; return }
+        if (c.freeze) { status = "This clip is already a frozen frame."; return }
+        val t = loc.srcMs.coerceIn(c.inMs, c.outMs - 40L)
+        val still = c.copy(inMs = t, outMs = t + durMs, speed = 1f, freeze = true, trans = 0, keys = emptyList(), stab = 0)
+        when {
+            t - c.inMs < 150L -> {
+                clips.add(i, still.copy(trans = c.trans))
+                clips[i + 1] = c.copy(trans = 0)
+                selClip = i
+            }
+            c.outMs - t < 150L -> {
+                clips.add(i + 1, still)
+                selClip = i + 1
+            }
+            else -> {
+                clips[i] = c.copy(outMs = t)
+                clips.add(i + 1, still)
+                clips.add(i + 2, c.copy(inMs = t, trans = 0, keys = emptyList()))
+                selClip = i + 1
+            }
+        }
+        status = "Froze a frame for ${durMs / 1000} seconds."
+    }
+
+    /** Splits the selected clip into ten parts that each play at their own speed, so the speed changes smoothly. */
+    fun speedRamp(kind: Int) {
+        if (clips.isEmpty()) return
+        val i = selClip.coerceIn(0, clips.lastIndex)
+        val c = clips[i]
+        if (c.freeze) { status = "A frozen frame has no motion to ramp."; return }
+        val srcLen = c.outMs - c.inMs
+        if (srcLen < 2000L) { status = "Speed ramps need a clip of at least 2 seconds."; return }
+        val curve = rampCurves[kind.coerceIn(0, rampCurves.lastIndex)]
+        val n = curve.size
+        val seg = srcLen / n
+        val parts = ArrayList<Clip>()
+        for (k in 0 until n) {
+            // Parts are made in the order they play. A reversed clip plays its source from the end.
+            val idx = if (c.reverse) n - 1 - k else k
+            val a = c.inMs + seg * idx
+            val b = if (idx == n - 1) c.outMs else a + seg
+            parts.add(c.copy(inMs = a, outMs = b, speed = curve[k], trans = if (k == 0) c.trans else 0, keys = emptyList()))
+        }
+        clips.removeAt(i)
+        clips.addAll(i, parts)
+        selClip = i
+        playMs = playMs.coerceAtMost(max(0L, total()).toFloat())
+        status = "Speed ramp \u201C${rampNames[kind]}\u201D added. The clip is now ten parts; animation keyframes on it were cleared."
     }
 
     fun deleteClip() {
@@ -468,10 +760,19 @@ class VideoModel {
     }
 }
 
-private fun DrawScope.drawLabel(tm: TextMeasurer, text: String, xf: Float, yf: Float, sizeFrac: Float, color: Color, box: Boolean) {
-    val style = TextStyle(color = color, fontSize = (sizeFrac * size.height).toSp(), fontWeight = FontWeight.Bold)
+private fun DrawScope.drawLabel(
+    tm: TextMeasurer, text: String, xf: Float, yf: Float, sizeFrac: Float, color: Color, box: Boolean,
+    alpha: Float = 1f, dx: Float = 0f, dy: Float = 0f, anchor: String? = null, cx: Float? = null, cy: Float? = null
+) {
+    val style = TextStyle(color = color.copy(alpha = color.alpha * alpha), fontSize = (sizeFrac * size.height).toSp(), fontWeight = FontWeight.Bold)
     val r = tm.measure(text, style)
-    val tl = Offset(xf * (size.width - r.size.width), yf * (size.height - r.size.height))
+    // A typed title is placed by the estimated width of its full text, the same way the export does it.
+    val wide = if (anchor != null) (widestLineEm(anchor) * sizeFrac * size.height).toFloat() else r.size.width.toFloat()
+    val tl = if (cx != null && cy != null) {
+        Offset(cx * size.width - wide / 2f + dx, cy * size.height - r.size.height / 2f + dy)
+    } else {
+        Offset(xf * (size.width - wide) + dx, yf * (size.height - r.size.height) + dy)
+    }
     if (box) drawRect(Color(0x99000000), tl, Size(r.size.width.toFloat(), r.size.height.toFloat()))
     drawText(r, topLeft = tl)
 }
@@ -504,7 +805,7 @@ fun VideoScreen(m: VideoModel, cap: CaptionsModel) {
         val frames = mutableMapOf<Int, ImageBitmap>()
         m.overlays.forEachIndexed { k, o ->
             if (ms >= o.startMs && ms <= o.startMs + (o.outMs - o.inMs)) {
-                frameAt(o.src, o.inMs + (ms - o.startMs))?.let { frames[k] = it }
+                frameAt(o.src, o.inMs + (ms - o.startMs))?.let { fr -> frames[k] = if (fullEngine && o.key > 0) keyPreview(fr, o.key, o.keySim) else fr }
             }
         }
         m.ovFrames = frames
@@ -581,21 +882,22 @@ private fun VideoStage(m: VideoModel, cap: CaptionsModel, tm: TextMeasurer, add:
         val curLoc = m.locate(m.playMs.toLong())
         val cur = curLoc?.let { m.clips[it.i] }
         val anim = if (cur != null && curLoc != null) animAt(cur, curLoc.localMs) else null
-        val frameShape = RoundedCornerShape(18.dp)
+        val frameShape = RoundedCornerShape(4.dp)
         val ratio = frameRatio(m.settings)
         val stageShape = if (ratio >= 1.7f) Modifier.fillMaxWidth().aspectRatio(ratio) else Modifier.align(Alignment.CenterHorizontally).heightIn(max = 360.dp).aspectRatio(ratio)
         Box(
-            stageShape.clip(frameShape).background(Color.Black).border(1.dp, Line, frameShape),
+            stageShape.clip(frameShape).background(Color.Black).border(1.dp, Line, frameShape).then(if (m.clips.isEmpty()) Modifier.cropMarks() else Modifier),
             contentAlignment = Alignment.Center
         ) {
             if (m.clips.isEmpty()) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Glyph(Ico.Video, Modifier.size(34.dp), TextLo)
-                    Label("Your video appears here")
+                    Text("No video yet", style = MaterialTheme.typography.titleLarge)
+                    Label("Add a clip to start cutting.")
                     Button(onClick = add) { Text("Add a video") }
                 }
             }
             m.frame?.let { f ->
+                if (fullEngine && m.settings.blurBg) Image(f, null, Modifier.fillMaxSize().blur(24.dp), contentScale = ContentScale.Crop, alpha = 0.75f)
                 Image(
                     f, null,
                     Modifier.fillMaxSize().graphicsLayer {
@@ -631,12 +933,53 @@ private fun VideoStage(m: VideoModel, cap: CaptionsModel, tm: TextMeasurer, add:
                     if (f != null) {
                         val w = size.width * o.scale
                         val h = w * f.height / f.width
-                        val cx = size.width / 2 + o.x * size.width
-                        val cy = size.height / 2 + o.y * size.height
-                        drawImage(f, dstOffset = IntOffset((cx - w / 2).toInt(), (cy - h / 2).toInt()), dstSize = IntSize(w.toInt(), h.toInt()), alpha = o.opacity)
+                        val tp = if (o.track.isNotEmpty() && o.blend == 0) trackAt(o.track, ms) else null
+                        val cx = if (tp != null) tp.first * size.width else size.width / 2 + o.x * size.width
+                        val cy = if (tp != null) tp.second * size.height else size.height / 2 + o.y * size.height
+                        if (fullEngine && o.mask > 0) {
+                            // A masked overlay is cut to a centred square first, then to the shape.
+                            val sq = minOf(f.width, f.height)
+                            clipPath(maskPath(o.mask, cx - w / 2, cy - w / 2, w)) {
+                                drawImage(
+                                    f, srcOffset = IntOffset((f.width - sq) / 2, (f.height - sq) / 2), srcSize = IntSize(sq, sq),
+                                    dstOffset = IntOffset((cx - w / 2).toInt(), (cy - w / 2).toInt()), dstSize = IntSize(w.toInt(), w.toInt()), alpha = o.opacity
+                                )
+                            }
+                        } else {
+                            drawImage(f, dstOffset = IntOffset((cx - w / 2).toInt(), (cy - h / 2).toInt()), dstSize = IntSize(w.toInt(), h.toInt()), alpha = o.opacity)
+                        }
                     }
                 }
-                m.titles.filter { ms in it.startMs..it.endMs }.forEach { drawLabel(tm, it.text, it.x, it.y, it.size, it.color, false) }
+                m.titles.filter { ms in it.startMs..it.endMs }.forEach { t ->
+                    val tp = if (t.track.isNotEmpty()) trackAt(t.track, ms) else null
+                    val dur = t.endMs - t.startMs
+                    val inD = minOf(450L, dur / 3).coerceAtLeast(100L)
+                    val outD = minOf(300L, dur / 4).coerceAtLeast(100L)
+                    val p = ((ms - t.startMs).toFloat() / inD).coerceIn(0f, 1f)
+                    val e = 1f - (1f - p) * (1f - p) * (1f - p)
+                    val a = p * ((t.endMs - ms).toFloat() / outD).coerceIn(0f, 1f)
+                    fun put(text: String, sz: Float, al: Float, dx: Float, dy: Float, anchor: String? = null) =
+                        drawLabel(tm, text, t.x, t.y, sz, t.color, false, alpha = al, dx = dx, dy = dy, anchor = anchor, cx = tp?.first, cy = tp?.second)
+                    if (!fullEngine || t.anim == 0) put(t.text, t.size, 1f, 0f, 0f)
+                    else when (t.anim) {
+                        2 -> put(t.text, t.size, a, 0f, (1f - e) * size.height * 0.06f)
+                        3 -> put(t.text, t.size, a, 0f, -(1f - e) * size.height * 0.06f)
+                        4 -> put(t.text, t.size, a, -(1f - e) * size.width * 0.25f, 0f)
+                        5 -> put(t.text, t.size * (0.5f + 0.5f * e), a, 0f, 0f)
+                        6 -> {
+                            val n = (((ms - t.startMs) / 80L).toInt() + 1).coerceIn(1, max(1, t.text.length))
+                            put(t.text.take(n), t.size, 1f, 0f, 0f, anchor = t.text)
+                        }
+                        else -> put(t.text, t.size, a, 0f, 0f)
+                    }
+                }
+                if (m.showCross) {
+                    val cxp = m.trackX * size.width
+                    val cyp = m.trackY * size.height
+                    drawCircle(Color.White, 16f, Offset(cxp, cyp), style = androidx.compose.ui.graphics.drawscope.Stroke(3f))
+                    drawLine(Color.White, Offset(cxp - 26f, cyp), Offset(cxp + 26f, cyp), 3f)
+                    drawLine(Color.White, Offset(cxp, cyp - 26f), Offset(cxp, cyp + 26f), 3f)
+                }
                 if (m.useCaptions) {
                     val st = cap.style
                     cap.cues.firstOrNull { ms / 1000.0 in it.start..it.end }?.let {
@@ -655,7 +998,7 @@ private fun VideoStage(m: VideoModel, cap: CaptionsModel, tm: TextMeasurer, add:
                         else { if (m.playMs >= total) m.playMs = 0f; m.playing = true }
                     },
                 contentAlignment = Alignment.Center
-            ) { Glyph(if (m.playing) Ico.Pause else Ico.Play, Modifier.size(22.dp), Color.White) }
+            ) { Glyph(if (m.playing) Ico.Pause else Ico.Play, Modifier.size(22.dp), AccentInk) }
             Spacer(Modifier.width(12.dp))
             Text("${mmss(m.playMs.toLong())} / ${mmss(total)}", style = MaterialTheme.typography.titleSmall)
             Spacer(Modifier.weight(1f))
@@ -669,11 +1012,11 @@ private fun VideoStage(m: VideoModel, cap: CaptionsModel, tm: TextMeasurer, add:
             Row(Modifier.fillMaxWidth().height(64.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 m.clips.forEachIndexed { i, c ->
                     val on = i == m.selClip
-                    val shape = RoundedCornerShape(10.dp)
+                    val shape = RoundedCornerShape(4.dp)
                     val thumb = m.thumbs["${c.src.ref}@${c.inMs}"]
                     Box(
                         Modifier.width((clipDur(c) / 1000f * 12f).coerceAtLeast(76f).dp).fillMaxHeight().clip(shape).background(Surface2)
-                            .border(if (on) 2.dp else 1.dp, if (on) Accent else Line, shape).clickable { m.selClip = i }
+                            .border(if (on) 2.dp else 1.dp, if (on) TextHi else Line, shape).clickable { m.selClip = i }
                     ) {
                         if (thumb != null) Image(thumb, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop, alpha = 0.8f)
                         Text("${i + 1}", Modifier.align(Alignment.TopStart).padding(6.dp), style = MaterialTheme.typography.labelMedium)
@@ -685,7 +1028,7 @@ private fun VideoStage(m: VideoModel, cap: CaptionsModel, tm: TextMeasurer, add:
     }
 }
 
-private val videoTabs = listOf(Ico.Clip to "Clip", Ico.Text to "Text", Ico.Layers to "Overlay", Ico.Music to "Audio", Ico.Export to "Export")
+private val videoTabs = listOf(Ico.Clip to "Clip", Ico.Text to "Text", Ico.Layers to "Overlay", Ico.Music to "Audio", Ico.Grid to "Templates", Ico.Export to "Export")
 
 @Composable
 private fun VideoInspector(
@@ -703,6 +1046,7 @@ private fun VideoInspector(
                 1 -> TextPanel(m, cap)
                 2 -> OverlayPanel(m)
                 3 -> AudioPanel(m)
+                4 -> TemplatesPanel(m)
                 else -> ExportPanel(m, export)
             }
             Spacer(Modifier.height(8.dp))
@@ -776,10 +1120,32 @@ private fun ClipPanel(m: VideoModel, scope: kotlinx.coroutines.CoroutineScope) {
         OutlinedButton(onClick = { m.move(1) }) { Text("Move right") }
         DangerButton(onClick = { m.deleteClip() }) { Text("Delete") }
     }
-    Param("Trim start", c.inMs.toFloat(), 0f..durMax, mmss(c.inMs), { v -> m.clips[i] = c.copy(inMs = v.toLong().coerceAtMost(c.outMs - 200)) })
-    Param("Trim end", c.outMs.toFloat(), 0f..durMax, mmss(c.outMs), { v -> m.clips[i] = c.copy(outMs = v.toLong().coerceAtLeast(c.inMs + 200)) })
-    Label("Speed")
-    Chips { speeds.forEach { s -> FilterChip(selected = c.speed == s, onClick = { m.clips[i] = c.copy(speed = s) }, label = { Text("${s}x") }) } }
+    if (c.freeze) {
+        Label("This clip is a frozen frame.")
+        Param("Hold for", (c.outMs - c.inMs).toFloat(), 500f..8000f, "${(c.outMs - c.inMs) / 100 / 10.0} s", { v -> m.clips[i] = c.copy(outMs = c.inMs + v.toLong()) })
+    } else {
+        Param("Trim start", c.inMs.toFloat(), 0f..durMax, mmss(c.inMs), { v -> m.clips[i] = c.copy(inMs = v.toLong().coerceAtMost(c.outMs - 200)) })
+        Param("Trim end", c.outMs.toFloat(), 0f..durMax, mmss(c.outMs), { v -> m.clips[i] = c.copy(outMs = v.toLong().coerceAtLeast(c.inMs + 200)) })
+        Label("Speed")
+        Chips { speeds.forEach { s -> FilterChip(selected = c.speed == s, onClick = { m.clips[i] = c.copy(speed = s) }, label = { Text("${s}x") }) } }
+    }
+
+    Label("Speed ramp: the speed changes smoothly inside the clip")
+    Chips { rampNames.forEachIndexed { k, name -> OutlinedButton(onClick = { m.speedRamp(k) }, enabled = !c.freeze) { Text(name) } } }
+    Label("Freeze frame: hold the picture under the playhead for two seconds")
+    OutlinedButton(onClick = { m.freezeFrame() }, enabled = fullEngine && !c.freeze && !c.reverse) { Text("Freeze frame at playhead") }
+    if (fullEngine) {
+        Label("Reverse and stabilise (applied when you export)")
+        Chips {
+            FilterChip(selected = c.reverse, onClick = { m.toggleReverse() }, label = { Text("Reverse") })
+            listOf("Steady off", "Steady", "Steady strong").forEachIndexed { n, name ->
+                FilterChip(selected = c.stab == n && !c.freeze, onClick = { if (!c.freeze) m.clips[i] = c.copy(stab = n) }, label = { Text(name) })
+            }
+        }
+        Label("Steady removes small hand shake. It cannot fix a very shaky video. Long clips are reversed in parts, so the export may take longer.")
+    } else {
+        Label("Freeze frame, reverse and stabilise need the full video engine.")
+    }
     if (fullEngine) Param("Clip volume", c.gain, 0f..2f, "${(c.gain * 100).roundToInt()}%", { v -> m.clips[i] = c.copy(gain = v) })
 
     Label("Filter")
@@ -920,7 +1286,7 @@ private fun KeyframeEditor(m: VideoModel, i: Int, c: Clip) {
     Label("Drag the dots to change when a keyframe happens and its value.")
     c.keys.forEachIndexed { k, key ->
         Column(Modifier.fillMaxWidth().glass(RoundedCornerShape(16.dp), 0.8f).padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text("Keyframe at ${mmss(key.tMs)}", color = Accent, fontWeight = FontWeight.SemiBold)
+            Text("Keyframe at ${mmss(key.tMs)}", color = TextHi, fontWeight = FontWeight.SemiBold)
             Param("Scale", key.scale, 0.3f..3f, "${(key.scale * 100).roundToInt()}%", { v -> m.clips[i] = c.withKey(k, key.copy(scale = v)) })
             Param("Position X", key.x, -1f..1f, "${(key.x * 100).roundToInt()}", { v -> m.clips[i] = c.withKey(k, key.copy(x = v)) })
             Param("Position Y", key.y, -1f..1f, "${(key.y * 100).roundToInt()}", { v -> m.clips[i] = c.withKey(k, key.copy(y = v)) })
@@ -967,6 +1333,11 @@ private fun TextPanel(m: VideoModel, cap: CaptionsModel) {
                 }
             }
             Param("Size", t.size, 0.03f..0.2f, "${(t.size * 100).roundToInt()}", { v -> m.titles[k] = t.copy(size = v) })
+            if (fullEngine) {
+                Label("Animation")
+                Chips { titleAnimNames.forEachIndexed { a, name -> FilterChip(selected = t.anim == a, onClick = { m.titles[k] = t.copy(anim = a) }, label = { Text(name) }) } }
+                TrackControls(m, t.startMs, t.endMs, t.track.isNotEmpty()) { r -> m.titles.getOrNull(k)?.let { m.titles[k] = it.copy(track = r ?: emptyList()) } }
+            }
             ColorDots(t.color) { c -> m.titles[k] = t.copy(color = c) }
             DangerButton(onClick = { m.titles.removeAt(k) }) { Text("Delete title") }
         }
@@ -986,7 +1357,7 @@ private fun OverlayPanel(m: VideoModel) {
     Button(onClick = add) { Text("Add overlay video at playhead") }
     m.overlays.forEachIndexed { k, o ->
         Column(Modifier.fillMaxWidth().glass(RoundedCornerShape(16.dp), 0.8f).padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text("${o.src.name}: starts ${mmss(o.startMs)}, plays ${(o.outMs - o.inMs) / 1000}s", color = Accent, fontWeight = FontWeight.SemiBold)
+            Text("${o.src.name}: starts ${mmss(o.startMs)}, plays ${(o.outMs - o.inMs) / 1000}s", color = TextHi, fontWeight = FontWeight.SemiBold)
             Param("Start", o.startMs.toFloat(), 0f..max(1f, m.total().toFloat()), mmss(o.startMs), { v -> m.overlays[k] = o.copy(startMs = v.toLong()) })
             Param("Length", (o.outMs - o.inMs).toFloat(), 500f..max(600f, (o.src.durationMs - o.inMs).toFloat()), "${(o.outMs - o.inMs) / 1000}s", { v -> m.overlays[k] = o.copy(outMs = o.inMs + v.toLong()) })
             Param("Position X", o.x, -1f..1f, "${(o.x * 100).roundToInt()}", { v -> m.overlays[k] = o.copy(x = v) })
@@ -1000,6 +1371,14 @@ private fun OverlayPanel(m: VideoModel) {
                     FilterChip(selected = o.blend == b, onClick = { m.overlays[k] = o.copy(blend = b) }, label = { Text(name) })
                 }
             }
+            Label("Green screen: removes this colour from the overlay so the video below shows through. Works with every blend mode.")
+            Chips { keyNames.forEachIndexed { n, name -> FilterChip(selected = o.key == n, onClick = { m.overlays[k] = o.copy(key = n) }, label = { Text(name) }) } }
+            if (o.key > 0) Param("Key strength", o.keySim, 0.05f..0.6f, "${(o.keySim * 100).roundToInt()}%", { v -> m.overlays[k] = o.copy(keySim = v) })
+            Label("Mask: cuts the overlay into a shape")
+            Chips { maskNames.forEachIndexed { n, name -> FilterChip(selected = o.mask == n, onClick = { m.overlays[k] = o.copy(mask = n) }, label = { Text(name) }) } }
+            if (o.key > 0) Label("The preview shows the key close to the export. The final result can differ a little at the edges.")
+            if (o.blend == 0) TrackControls(m, o.startMs, o.startMs + (o.outMs - o.inMs), o.track.isNotEmpty()) { r -> m.overlays.getOrNull(k)?.let { m.overlays[k] = it.copy(track = r ?: emptyList()) } }
+            else Label("Following an object needs the Normal blend.")
             DangerButton(onClick = { m.overlays.removeAt(k) }) { Text("Delete overlay") }
         }
     }
@@ -1035,10 +1414,34 @@ private fun AudioPanel(m: VideoModel) {
     ) { Text("Add voiceover at playhead") }
     m.voices.forEachIndexed { k, v ->
         Column(Modifier.fillMaxWidth().glass(RoundedCornerShape(16.dp), 0.8f).padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text("${v.text.take(40)} · ${(v.durMs / 1000)}s", color = Accent, fontWeight = FontWeight.SemiBold)
+            Text("${v.text.take(40)} · ${(v.durMs / 1000)}s", color = TextHi, fontWeight = FontWeight.SemiBold)
             Param("Starts at", v.startMs.toFloat(), 0f..max(1f, m.total().toFloat()), mmss(v.startMs), { x -> m.voices[k] = v.copy(startMs = x.toLong()) })
             Param("Volume", v.vol, 0f..2f, "${(v.vol * 100).roundToInt()}%", { x -> m.voices[k] = v.copy(vol = x) })
             DangerButton(onClick = { m.voices.removeAt(k) }) { Text("Delete") }
+        }
+    }
+
+    Label("Beats and auto-cut: the sound is analysed on this device")
+    Chips {
+        m.voices.forEachIndexed { k, v ->
+            OutlinedButton(enabled = !m.busy, onClick = { scope.launch { m.busy = true; m.status = "Listening…"; m.findBeats(k); m.status = m.beatInfo; m.busy = false } }) { Text("Beats: ${v.text.take(16)}") }
+        }
+        OutlinedButton(enabled = !m.busy && m.clips.isNotEmpty(), onClick = { scope.launch { m.busy = true; m.status = "Listening…"; m.findBeats(-1); m.status = m.beatInfo; m.busy = false } }) { Text("Beats: this clip's sound") }
+    }
+    if (m.beatInfo.isNotEmpty()) Label(m.beatInfo)
+    if (m.beats.isNotEmpty()) {
+        Label("Cut on every")
+        Chips { listOf(1, 2, 4).forEach { n -> FilterChip(selected = m.beatEvery == n, onClick = { m.beatEvery = n }, label = { Text(if (n == 1) "beat" else "$n beats") }) } }
+        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = { m.cutAtBeats() }) { Text("Cut clips at the beats") }
+            OutlinedButton(onClick = { m.autoCutToBeats() }) { Text("Auto-cut to the beat") }
+        }
+        Label("Auto-cut makes short shots from all your clips, spread across the footage, with a new shot on each beat. Undo takes it back.")
+    }
+    Label("Remove the quiet parts of the selected clip (jump cuts for talking videos)")
+    Chips {
+        listOf("Gentle" to -45.0, "Normal" to -38.0, "Strong" to -32.0).forEach { (n, db) ->
+            OutlinedButton(enabled = !m.busy && m.clips.isNotEmpty(), onClick = { scope.launch { m.busy = true; m.status = "Listening…"; m.removeSilences(db); m.busy = false } }) { Text(n) }
         }
     }
 }
@@ -1050,6 +1453,8 @@ private fun ExportPanel(m: VideoModel, export: () -> Unit) {
     else {
         Label("Shape")
         Chips { aspectNames.forEachIndexed { a, n -> FilterChip(selected = st.aspect == a, onClick = { m.settings = st.copy(aspect = a) }, label = { Text(n) }) } }
+        Chips { FilterChip(selected = st.blurBg, onClick = { m.settings = st.copy(blurBg = !st.blurBg) }, label = { Text("Blurred background") }) }
+        Label("Fills the empty bars around the picture with a blurred, darker copy of it.")
         Label("Resolution")
         Chips { resNames.forEachIndexed { r, n -> FilterChip(selected = st.res == r, onClick = { m.settings = st.copy(res = r) }, label = { Text(n) }) } }
         Label("Frame rate")
@@ -1072,4 +1477,49 @@ private fun ExportPanel(m: VideoModel, export: () -> Unit) {
         Label("H.264 is used when Windows provides its encoder. Otherwise the file is MPEG-4.")
     }
     Button(onClick = export, enabled = m.clips.isNotEmpty() && !m.busy) { Text("Export MP4") }
+}
+
+@Composable
+private fun TemplatesPanel(m: VideoModel) {
+    if (m.clips.isEmpty()) {
+        Label("Add a video first, then pick a template.")
+        return
+    }
+    Label("A template sets the shape, the look, the transitions and a title in one tap. It replaces your titles and clip looks. Use Undo at the top to take it back.")
+    if (!fullEngine) Label("Shape, transitions, animation and blurred background need the full video engine, so only the look and title are used here.")
+    videoTemplates.forEach { t ->
+        Column(
+            Modifier.fillMaxWidth().glass(RoundedCornerShape(16.dp), 0.8f).clickable(enabled = !m.busy) { t.apply(m); m.status = "Applied \u201C${t.name}\u201D." }.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(t.name, style = MaterialTheme.typography.titleSmall)
+            Label(t.desc)
+        }
+    }
+}
+
+@Composable
+private fun TrackControls(m: VideoModel, startMs: Long, endMs: Long, tracked: Boolean, onTracked: (List<TrackPt>?) -> Unit) {
+    val scope = rememberCoroutineScope()
+    Label("Follow an object: put the cross on it at the playhead, then tap Track. Pick a spot with some detail, not a flat colour.")
+    Chips { FilterChip(selected = m.showCross, onClick = { m.showCross = !m.showCross }, label = { Text("Show cross on preview") }) }
+    Param("Cross left to right", m.trackX, 0f..1f, "${(m.trackX * 100).roundToInt()}%", { v -> m.trackX = v })
+    Param("Cross top to bottom", m.trackY, 0f..1f, "${(m.trackY * 100).roundToInt()}%", { v -> m.trackY = v })
+    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Button(
+            enabled = !m.busy && m.clips.isNotEmpty(),
+            onClick = {
+                scope.launch {
+                    m.busy = true; m.progress = 0f; m.status = "Following the object…"
+                    val from = m.playMs.toLong().coerceIn(startMs, max(startMs, endMs))
+                    val r = try { m.trackFrom(from, max(from + 300L, endMs)) } catch (e: Throwable) { null }
+                    if (r != null) { onTracked(r); m.status = "Following the object (${r.size} points)." }
+                    else m.status = "Could not follow that point. Try a spot with more detail."
+                    m.busy = false
+                }
+            }
+        ) { Text("Track from playhead") }
+        if (tracked) OutlinedButton(onClick = { onTracked(null) }) { Text("Stop following") }
+    }
+    if (tracked) Label("Following an object. The position you set is ignored.")
 }

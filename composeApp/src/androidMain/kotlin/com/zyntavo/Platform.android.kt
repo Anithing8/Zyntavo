@@ -169,3 +169,6 @@ actual fun writePrefs(text: String) {
     } catch (e: Throwable) {
     }
 }
+
+actual fun imageFromPixels(w: Int, h: Int, px: IntArray): ImageBitmap =
+    Bitmap.createBitmap(px, w, h, Bitmap.Config.ARGB_8888).asImageBitmap()

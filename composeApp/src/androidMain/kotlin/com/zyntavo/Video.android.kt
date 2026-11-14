@@ -332,7 +332,9 @@ actual suspend fun exportVideo(p: VideoProject, onProgress: (Float) -> Unit): St
     var format = "H.264, device encoder"
     val needsShaping = p.captions.any { c -> c.text.any { it.code in 0x0900..0x097F } } ||
         p.titles.any { t -> t.text.any { it.code in 0x0900..0x097F } }
-    if (ff != null && !p.settings.basic && !needsShaping) {
+    // Effects that only the full engine can draw switch the export to it, even if the basic H.264 format was chosen.
+    val needsFull = usesFullFeatures(p)
+    if (ff != null && (!p.settings.basic || needsFull) && !needsShaping) {
         format = withContext(Dispatchers.IO) {
             val work = File(ctx.cacheDir, "work-${System.currentTimeMillis()}").also { it.mkdirs() }
             try {
@@ -341,8 +343,10 @@ actual suspend fun exportVideo(p: VideoProject, onProgress: (Float) -> Unit): St
                 work.deleteRecursively()
             }
         }
+        if (p.settings.basic && needsFull) format += ", full engine used for your effects"
     } else {
         exportWithMedia3(p, outFile, onProgress)
+        if (needsShaping && needsFull) format += ", Hindi text was used, so effects that need the full engine were skipped"
     }
     return withContext(Dispatchers.IO) {
         val values = ContentValues().apply {
@@ -425,4 +429,9 @@ actual suspend fun cutoutVideo(
     } finally {
         work.deleteRecursively()
     }
+}
+
+actual suspend fun decodeAudioMono(ref: String, startMs: Long, durMs: Long): ShortArray? = withContext(Dispatchers.IO) {
+    val ff = AppCtx.ffmpegFile ?: return@withContext null
+    try { FFmpeg.pcm(ffEnv(ff).ffmpeg, ref, startMs, durMs) } catch (e: Exception) { null }
 }

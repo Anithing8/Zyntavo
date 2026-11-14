@@ -24,7 +24,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.LayoutDirection
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.max
@@ -53,6 +57,13 @@ data class EditState(
     val hue: Float = 0f,
     val fade: Float = 0f,
     val flipV: Boolean = false,
+    val sharpen: Float = 0f,
+    val blur: Float = 0f,
+    val highlights: Float = 0f,
+    val shadows: Float = 0f,
+    val grain: Float = 0f,
+    val bgBlur: Float = 0f,
+    val angle: Float = 0f,
     val texts: List<TextItem> = emptyList()
 )
 
@@ -167,11 +178,16 @@ fun DrawScope.drawEdits(src: ImageBitmap, s: EditState, tm: TextMeasurer, select
     val turned = s.rotation % 180 != 0
     val sw = (if (turned) src.height else src.width).toFloat()
     val sh = (if (turned) src.width else src.height).toFloat()
-    val k = max(size.width / sw, size.height / sh)
+    // Straighten: turning by a small angle leaves empty corners, so the picture is enlarged just enough to cover them.
+    val tilt = abs(s.angle) * (PI.toFloat() / 180f)
+    val q = size.width / size.height
+    val extra = if (tilt == 0f) 1f else cos(tilt) + sin(tilt) * max(q, 1f / q)
+    val k = max(size.width / sw, size.height / sh) * extra
+    val tiltDeg = if (s.flip != s.flipV) -s.angle else s.angle
     withTransform({
         translate(size.width / 2f, size.height / 2f)
         scale(if (s.flip) -1f else 1f, if (s.flipV) -1f else 1f, Offset.Zero)
-        rotate(s.rotation.toFloat(), Offset.Zero)
+        rotate(s.rotation.toFloat() + tiltDeg, Offset.Zero)
         scale(k, k, Offset.Zero)
         translate(-src.width / 2f, -src.height / 2f)
     }) {
@@ -244,6 +260,42 @@ class Editor {
     fun load(img: ImageBitmap) {
         original = img; cutout = null; s = EditState(); selected = null
         undoS.clear(); redoS.clear(); base = null
+        processed = null; processedKey = null
+    }
+
+    // ---------- detail work: sharpen, blur, light, grain and portrait blur ----------
+
+    var processed by mutableStateOf<ImageBitmap?>(null)
+    var processedKey by mutableStateOf<List<Any?>?>(null)
+
+    fun needsDetail() = s.needsDetail(cutout != null)
+    fun detailKey(): List<Any?> = listOf(original, cutout, s.cutout, s.sharpen, s.blur, s.highlights, s.shadows, s.grain, s.bgBlur)
+
+    /** The picture the preview draws: with the detail work done if there is any (the last finished version while a new one is made). */
+    val image: ImageBitmap? get() = if (needsDetail()) (processed ?: shown) else shown
+
+    /** Redoes the detail work in the background a moment after the sliders stop moving. */
+    suspend fun refreshDetail() {
+        if (!needsDetail()) {
+            processed = null; processedKey = null
+            return
+        }
+        val key = detailKey()
+        if (processedKey == key) return
+        delay(120)
+        val job = DetailJob(shown ?: return, original, s)
+        val out = withContext(Dispatchers.Default) { runDetail(job) }
+        processed = out
+        processedKey = key
+    }
+
+    /** The picture to save: always up to date with every slider. */
+    fun exportImage(): ImageBitmap? {
+        val b = shown ?: return null
+        if (!needsDetail()) return b
+        val p = processed
+        if (p != null && processedKey == detailKey()) return p
+        return runDetail(DetailJob(b, original, s))
     }
 
     /** Looks at the picture and works out brightness, contrast and colour that make it look balanced. */

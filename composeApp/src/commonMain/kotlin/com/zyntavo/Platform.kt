@@ -72,3 +72,9 @@ expect fun readPrefs(): String
 
 /** Replaces the contents of that file. */
 expect fun writePrefs(text: String)
+
+/** Builds a picture from ARGB pixels, one Int per pixel. */
+expect fun imageFromPixels(w: Int, h: Int, px: IntArray): ImageBitmap
+
+/** Decodes a stretch of a video or audio file to mono 16-bit samples at 11025 Hz, for finding beats and quiet parts. Null if it could not. */
+expect suspend fun decodeAudioMono(ref: String, startMs: Long, durMs: Long): ShortArray?
