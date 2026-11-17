@@ -1,0 +1,15 @@
+[package]
+name = "zyntavo-app"
+version = "0.1.0"
+edition = "2021"
+description = "Zyntavo: a photo, video and subtitle editor. Desktop app."
+
+[[bin]]
+name = "zyntavo"
+path = "src/main.rs"
+
+[dependencies]
+zyntavo-core = { path = "../zyntavo-core" }
+eframe = "=0.29.1"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+rfd = "0.15"
