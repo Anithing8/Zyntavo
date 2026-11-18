@@ -1,7 +1,0 @@
-[package]
-name = "zyntavo-core"
-version = "0.1.0"
-edition = "2021"
-description = "Photo edits, the auto editor, beat finding, tracking and the FFmpeg export builder for Zyntavo. No dependencies."
-
-[dependencies]
