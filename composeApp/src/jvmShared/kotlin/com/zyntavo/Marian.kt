@@ -9,10 +9,8 @@ import java.nio.LongBuffer
 import java.text.Normalizer
 import kotlin.math.min
 
-internal fun fetchFile(url: String, to: File) {
-    val tmp = File(to.path + ".part")
-    URL(url).openStream().use { i -> tmp.outputStream().use { o -> i.copyTo(o) } }
-    if (!tmp.renameTo(to)) throw IllegalStateException("Could not save ${to.name}")
+internal fun fetchFile(url: String, to: File, status: ((String) -> Unit)? = null) {
+    downloadFile(url, to, "the translation model (${to.name})", status)
 }
 
 private class SpmPiece(val text: String, val score: Float, val type: Int)
@@ -186,8 +184,7 @@ object Marian {
         for ((remote, local) in files) {
             val f = File(dir, local)
             if (f.exists() && f.length() > 100) continue
-            status("Downloading the translation model ($local, about 115 MB in total, one time)…")
-            fetchFile("https://huggingface.co/$repo/resolve/main/$remote", f)
+            fetchFile("https://huggingface.co/$repo/resolve/main/$remote", f, status)
         }
         return dir
     }

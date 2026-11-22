@@ -30,9 +30,7 @@ object Matting {
         if (f.exists() && f.length() > 1_000_000) return f
         dir.mkdirs()
         status("Downloading the ${matteQualityNames[q]} cutout model (${matteQualityNotes[q]}, one time)…")
-        val tmp = File(dir, m.file + ".part")
-        URL(BASE + m.file).openStream().use { i -> tmp.outputStream().use { o -> i.copyTo(o) } }
-        if (!tmp.renameTo(f)) throw IllegalStateException("Could not save the model")
+        downloadFile(BASE + m.file, f, "the ${matteQualityNames[q]} cutout model", status)
         return f
     }
 

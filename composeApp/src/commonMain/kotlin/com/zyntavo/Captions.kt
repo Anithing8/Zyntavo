@@ -79,6 +79,127 @@ object Hinglish {
 
     private class Syl(var cons: String, var vowel: String?, var tail: String, val dev: Boolean)
 
+    /**
+     * Common words, written the way people type them. The first part is everyday Hindi in the usual Roman spelling
+     * (hai, nahi, kya, mein). The second part is English words that Hindi speech writes in Devanagari (मीटिंग), which
+     * come back as the English word (meeting). Words that are not here are written by the rules below.
+     */
+    private const val HINDI_WORDS = """
+मैं=main मैंने=maine मुझे=mujhe मुझको=mujhko मेरा=mera मेरी=meri
+मेरे=mere हम=hum हमें=humein हमारा=hamara हमारी=hamari हमारे=hamare
+तुम=tum तुम्हें=tumhein तुम्हारा=tumhara तुम्हारी=tumhari तुम्हारे=tumhare तू=tu
+तेरा=tera तेरी=teri तेरे=tere आप=aap आपको=aapko आपका=aapka
+आपकी=aapki आपके=aapke आपने=aapne वह=woh वो=woh वे=woh
+यह=yeh ये=ye इस=is उस=us इसे=ise उसे=use
+इसका=iska उसका=uska उसकी=uski उसके=uske उनका=unka उनकी=unki
+उनके=unke उन्होंने=unhone इन्होंने=inhone हमने=humne तुमने=tumne उसने=usne
+इसने=isne किसी=kisi कोई=koi कुछ=kuch सब=sab सभी=sabhi
+हर=har खुद=khud अपना=apna अपनी=apni अपने=apne है=hai
+हैं=hain हूँ=hoon हूं=hoon था=tha थी=thi थे=the
+थीं=thin हो=ho होगा=hoga होगी=hogi होंगे=honge होता=hota
+होती=hoti होते=hote हुआ=hua हुई=hui हुए=hue रहा=raha
+रही=rahi रहे=rahe गया=gaya गयी=gayi गई=gayi गए=gaye
+गये=gaye करना=karna करता=karta करती=karti करते=karte करो=karo
+करें=karein करूँगा=karunga करूंगा=karunga करेंगे=karenge कर=kar किया=kiya
+की=ki कीजिए=kijiye दिया=diya दी=di दिए=diye देना=dena
+देखो=dekho देखना=dekhna देखा=dekha सुनो=suno बोलो=bolo बोला=bola
+कहा=kaha कहना=kehna कहते=kehte जाना=jaana जाता=jaata जाती=jaati
+जाते=jaate जाओ=jao चलो=chalo चलिए=chaliye आना=aana आता=aata
+आती=aati आते=aate आओ=aao आया=aaya आई=aayi आए=aaye
+लेना=lena लिया=liya ली=li लो=lo लें=lein लगा=laga
+लगता=lagta लगती=lagti मिलता=milta मिला=mila मिल=mil बनाना=banana
+बनाया=banaya बना=bana पता=pata समझ=samajh समझे=samjhe समझा=samjha
+रखो=rakho रख=rakh चाहिए=chahiye चाहता=chahta चाहती=chahti सकता=sakta
+सकती=sakti सकते=sakte पड़ेगा=padega पड़ता=padta चाहे=chahe जानता=jaanta
+जानते=jaante क्या=kya क्यों=kyun क्योंकि=kyunki कैसे=kaise कैसा=kaisa
+कैसी=kaisi कहाँ=kahan कहां=kahan कब=kab कौन=kaun कितना=kitna
+कितनी=kitni कितने=kitne कौनसा=kaunsa यहाँ=yahan यहां=yahan वहाँ=wahan
+वहां=wahan अभी=abhi अब=ab तब=tab जब=jab फिर=phir
+कभी=kabhi हमेशा=hamesha बस=bas बहुत=bahut ज्यादा=zyada ज़्यादा=zyada
+थोड़ा=thoda थोड़ी=thodi बिल्कुल=bilkul शायद=shayad सच=sach सही=sahi
+गलत=galat ठीक=theek अच्छा=accha अच्छी=acchi अच्छे=acche बुरा=bura
+बड़ा=bada बड़ी=badi बड़े=bade छोटा=chhota नया=naya नई=nayi
+नए=naye पहले=pehle पहला=pehla बाद=baad साथ=saath लिए=liye
+इसलिए=isliye तक=tak से=se में=mein पर=par को=ko
+का=ka के=ke और=aur या=ya लेकिन=lekin मगर=magar
+तो=toh भी=bhi ही=hi नहीं=nahi ना=na न=na
+हाँ=haan हां=haan जी=ji अरे=arre ओह=oh वाह=wah
+यार=yaar भाई=bhai दोस्त=dost दोस्तों=doston बहन=behen लोग=log
+लोगों=logon आज=aaj कल=kal रात=raat दिन=din समय=samay
+वक्त=waqt बात=baat बातें=baatein काम=kaam घर=ghar पैसा=paisa
+पैसे=paise जिंदगी=zindagi ज़िंदगी=zindagi प्यार=pyaar दुनिया=duniya देश=desh
+सबसे=sabse सबको=sabko इसमें=ismein उसमें=usmein किसने=kisne किसको=kisko
+जैसे=jaise जैसा=jaisa वैसे=waise ऐसे=aise ऐसा=aisa ऐसी=aisi
+वैसा=waisa इतना=itna उतना=utna इतने=itne मतलब=matlab सवाल=sawaal
+जवाब=jawab कहानी=kahani खास=khaas सबकुछ=sabkuch खुशी=khushi मुश्किल=mushkil
+आसान=aasaan पूरा=poora पूरी=poori पूरे=poore एक=ek दो=do
+तीन=teen चार=chaar पाँच=paanch पांच=paanch सात=saat आठ=aath
+नौ=nau दस=das सौ=sau हजार=hazaar लाख=lakh करोड़=crore
+जाऊँगा=jaunga जाऊंगा=jaunga जाऊँगी=jaungi जाएगा=jayega जाएगी=jayegi जाएँगे=jayenge जाएंगे=jayenge आएगा=ayega आएगी=ayegi
+आएँगे=ayenge आएंगे=ayenge बारे=baare बताओ=batao बताता=batata बताते=batate बताया=bataya बता=bata सोचो=socho सोचता=sochta
+सोचते=sochte खाना=khana पीना=peena सोना=sona उठना=uthna मिलेगा=milega मिलेगी=milegi करूँगी=karungi करूंगी=karungi
+दिखाओ=dikhao दिखाता=dikhata दिखाते=dikhate दिखा=dikha वाला=wala वाली=wali वाले=wale कोशिश=koshish जरूर=zaroor ज़रूर=zaroor
+जरुरी=zaroori जल्दी=jaldi धीरे=dheere सिर्फ=sirf सिर्फ़=sirf बिना=bina बाहर=bahar अंदर=andar ऊपर=upar नीचे=neeche पास=paas
+दूर=door रोज=roz रोज़=roz महीना=mahina साल=saal सुबह=subah शाम=shaam
+"""
+    private const val ENGLISH_WORDS = """
+वीडियो=video वीडियोज=videos चैनल=channel सब्सक्राइब=subscribe लाइक=like
+शेयर=share कमेंट=comment कॉमेंट=comment फोन=phone मोबाइल=mobile
+इंटरनेट=internet ऑनलाइन=online ऑफलाइन=offline मीटिंग=meeting ऑफिस=office
+कंप्यूटर=computer लैपटॉप=laptop ऐप=app एप=app एप्लीकेशन=application
+वेबसाइट=website गूगल=google यूट्यूब=youtube इंस्टाग्राम=instagram फेसबुक=facebook
+व्हाट्सएप=whatsapp टाइम=time प्रॉब्लम=problem सॉल्यूशन=solution आइडिया=idea
+प्लान=plan बिजनेस=business मैनेजर=manager टीम=team प्रोजेक्ट=project
+गेम=game मूवी=movie फिल्म=film सॉन्ग=song म्यूजिक=music
+फोटो=photo कैमरा=camera पार्टी=party फ्रेंड=friend फ्रेंड्स=friends
+गर्लफ्रेंड=girlfriend बॉयफ्रेंड=boyfriend सीरियस=serious सॉरी=sorry थैंक्यू=thank_you
+प्लीज=please ओके=okay हेलो=hello हैलो=hello हाय=hi
+बाय=bye गुड=good वेरी=very नाइस=nice कूल=cool
+फास्ट=fast स्लो=slow ट्रेंड=trend वायरल=viral कंटेंट=content
+क्रिएटर=creator फॉलो=follow फॉलोअर्स=followers पोस्ट=post रील=reel
+रील्स=reels स्टोरी=story लाइव=live अकाउंट=account पासवर्ड=password
+मैसेज=message कॉल=call नंबर=number बैंक=bank कार्ड=card
+स्कूल=school कॉलेज=college क्लास=class एग्जाम=exam टीचर=teacher
+स्टूडेंट=student डॉक्टर=doctor हॉस्पिटल=hospital सर=sir मैम=ma'am
+मैडम=madam ट्रेन=train कार=car बाइक=bike पुलिस=police
+टैक्स=tax मार्केट=market शॉपिंग=shopping ऑर्डर=order डिलीवरी=delivery
+प्राइस=price ऑफर=offer सेल=sale डिस्काउंट=discount क्वालिटी=quality
+ब्रांड=brand प्रोडक्ट=product सर्विस=service कस्टमर=customer पॉइंट=point
+सिस्टम=system सॉफ्टवेयर=software डेटा=data ईमेल=email लिंक=link
+क्लिक=click डाउनलोड=download अपलोड=upload ट्यूटोरियल=tutorial चैलेंज=challenge
+सपोर्ट=support सेटिंग=setting सेटिंग्स=settings अपडेट=update ऑप्शन=option
+फीचर=feature एनर्जी=energy पावर=power लेवल=level टाइप=type
+स्टाइल=style लुक=look फैशन=fashion मॉडल=model एक्टर=actor
+हीरो=hero फैन=fan फैंस=fans स्टार=star क्रिकेट=cricket
+मैच=match प्लेयर=player कोच=coach वर्ल्ड=world कप=cup
+इंडिया=India इंडियन=Indian फ्री=free
+"""
+
+    private val dictionary: Map<String, String> by lazy {
+        val m = HashMap<String, String>()
+        for (part in listOf(HINDI_WORDS, ENGLISH_WORDS)) {
+            for (p in part.split(Regex("\\s+"))) {
+                val i = p.indexOf('=')
+                if (i > 0 && i < p.length - 1) m[p.substring(0, i)] = p.substring(i + 1).replace('_', ' ')
+            }
+        }
+        m
+    }
+
+    /** One spoken word, with any punctuation around it kept as it is. */
+    private fun token(t: String): String {
+        if (!isDevanagari(t)) return t
+        fun letter(c: Char) = c.code in 0x0900..0x0963 || c.code in 0x0966..0x097F || c.isLetterOrDigit()
+        var a = 0
+        var b = t.length
+        while (a < b && !letter(t[a])) a++
+        while (b > a && !letter(t[b - 1])) b--
+        val core = t.substring(a, b)
+        if (core.isEmpty() || !isDevanagari(core)) return word(t)
+        val hit = dictionary[core] ?: return word(t)
+        return word(t.substring(0, a)) + hit + word(t.substring(b))
+    }
+
     fun isDevanagari(s: String) = s.any { it.code in 0x0900..0x097F }
 
     private fun isCons(c: Int) = cons.containsKey(c) || precomposed.containsKey(c)
@@ -88,11 +209,11 @@ object Hinglish {
         val cur = StringBuilder()
         for (ch in text) {
             if (ch.isWhitespace()) {
-                if (cur.isNotEmpty()) { out.append(word(cur.toString())); cur.clear() }
+                if (cur.isNotEmpty()) { out.append(token(cur.toString())); cur.clear() }
                 out.append(ch)
             } else cur.append(ch)
         }
-        if (cur.isNotEmpty()) out.append(word(cur.toString()))
+        if (cur.isNotEmpty()) out.append(token(cur.toString()))
         return out.toString()
     }
 
@@ -417,6 +538,10 @@ class CaptionsModel {
     var altName by mutableStateOf("")
     var mode by mutableStateOf(0)
     var mainEnglish by mutableStateOf(true)
+    /** When the language is Hinglish: 0 written in Roman letters (Hinglish), 1 Hindi in Devanagari, 2 English. */
+    var hingStyle by mutableStateOf(0)
+    /** The words as the speech model wrote them (Devanagari for Hinglish), kept so Hindi and English can be made from them. */
+    var rawWords by mutableStateOf<List<Word>>(emptyList())
     var glossary by mutableStateOf(Learned.savedGlossary().also { Hints.custom = it })
     var findText by mutableStateOf("")
     var replaceText by mutableStateOf("")
@@ -465,7 +590,7 @@ fun CaptionStyleControls(m: CaptionsModel) {
 @Composable
 fun CaptionsScreen(m: CaptionsModel) {
     val scope = rememberCoroutineScope()
-    val toEnglish = m.translate && m.lang != 0
+    val toEnglish = if (m.lang == 2) m.hingStyle == 2 else m.translate && m.lang != 0
     val engine = if (toEnglish && m.engine == 0) 2 else m.engine
     /** English subtitles only: 0 = the main text, 1 = the translated text, -1 = nothing in English to check. */
     fun englishTarget(): Int = when {
@@ -554,7 +679,10 @@ fun CaptionsScreen(m: CaptionsModel) {
         onStatus = { m.status = it },
         onDone = { w ->
             if (w != null) {
-                m.words = applyLearned(w)
+                // Hinglish is written in Roman letters straight away, so the captions match how it was spoken.
+                val roman = m.lang == 2 && m.hingStyle == 0
+                m.rawWords = if (m.lang == 2) w else emptyList()
+                m.words = if (roman) applyLearned(hinglishWords(w)) else applyLearned(w)
                 m.alt = emptyList(); m.altName = ""; m.mode = 0
                 m.mainEnglish = m.lang == 0 || toEnglish
                 m.spellChanges = emptyList()
@@ -566,7 +694,10 @@ fun CaptionsScreen(m: CaptionsModel) {
     )
     val save = rememberTextSaver { m.status = it }
     val clipboard = LocalClipboardManager.current
-    val srcDevanagari = hasDevanagari(m.words)
+    // Translations and the other script are made from the words as the speech model wrote them.
+    val baseWords = if (m.rawWords.isNotEmpty()) m.rawWords else m.words
+    val srcDevanagari = hasDevanagari(baseWords)
+    val mainIsHinglish = m.rawWords.isNotEmpty() && !hasDevanagari(m.words)
 
     /** target: 0 English, 1 Hindi, 2 Hinglish (Hindi in Roman letters) */
     fun makeAlt(target: Int) {
@@ -575,10 +706,10 @@ fun CaptionsScreen(m: CaptionsModel) {
             m.status = "Working…"
             val result: List<Word>? = try {
                 when (target) {
-                    0 -> translateWords(m.words, false) { m.status = it }
-                    1 -> translateWords(m.words, true) { m.status = it }
+                    0 -> translateWords(baseWords, false) { m.status = it }
+                    1 -> if (srcDevanagari) baseWords else translateWords(baseWords, true) { m.status = it }
                     else -> {
-                        val hindi = if (srcDevanagari) m.words else translateWords(m.words, true) { m.status = it }
+                        val hindi = if (srcDevanagari) baseWords else translateWords(baseWords, true) { m.status = it }
                         hindi?.let { hinglishWords(it) }
                     }
                 }
@@ -619,18 +750,29 @@ fun CaptionsScreen(m: CaptionsModel) {
                                 onClick = {
                                     if (!m.busy) {
                                         m.lang = i
-                                        if (i == 1 || i == 2) { m.translate = true; m.engine = 3 } else m.translate = false
+                                        if (i == 2) { m.hingStyle = 0; m.translate = false; m.engine = 3 }
+                                        else if (i == 1) { m.translate = true; m.engine = 3 }
+                                        else m.translate = false
                                     }
                                 },
                                 label = { Text(l.label) }
                             )
                         }
                     }
-                    if (m.lang != 0) {
+                    if (m.lang == 2) {
+                        Label("Write the captions in")
+                        Segmented(listOf("Hinglish", "Hindi", "English"), m.hingStyle, { if (!m.busy) m.hingStyle = it })
+                        Label(
+                            when (m.hingStyle) {
+                                0 -> "Roman letters, the way you would type it: \"aaj hum meeting mein jaayenge\". English words stay in English. Use Max for the best result."
+                                1 -> "Hindi in Devanagari letters. English words may be written in Devanagari too."
+                                else -> "The speech is translated into English. Works best with Max."
+                            }
+                        )
+                    } else if (m.lang != 0) {
                         Chips { FilterChip(selected = m.translate, onClick = { m.translate = !m.translate }, label = { Text("Subtitles in English") }) }
                         Label(
-                            if (m.lang == 2) "Hinglish means Hindi and English mixed. English subtitles work best with Max."
-                            else if (m.translate) "The speech is written directly in English."
+                            if (m.translate) "The speech is written directly in English."
                             else "Captions stay in the language that is spoken."
                         )
                     }
@@ -687,8 +829,8 @@ fun CaptionsScreen(m: CaptionsModel) {
                     Section("Other languages") {
                         Chips {
                             if (srcDevanagari) FilterChip(selected = m.altName == "English", onClick = { if (!m.busy) makeAlt(0) }, label = { Text("English") })
-                            if (!srcDevanagari) FilterChip(selected = m.altName == "Hindi", onClick = { if (!m.busy) makeAlt(1) }, label = { Text("Hindi") })
-                            FilterChip(selected = m.altName == "Hinglish", onClick = { if (!m.busy) makeAlt(2) }, label = { Text("Hinglish") })
+                            if (!srcDevanagari || mainIsHinglish) FilterChip(selected = m.altName == "Hindi", onClick = { if (!m.busy) makeAlt(1) }, label = { Text("Hindi") })
+                            if (!mainIsHinglish) FilterChip(selected = m.altName == "Hinglish", onClick = { if (!m.busy) makeAlt(2) }, label = { Text("Hinglish") })
                         }
                         if (m.alt.isNotEmpty()) Segmented(listOf("Original", m.altName, "Both"), m.mode, { m.mode = it; m.rebuild() })
                     }

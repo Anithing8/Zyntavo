@@ -25,8 +25,7 @@ object SpellFix {
         for ((remote, local) in files) {
             val f = File(dir, local)
             if (f.exists() && f.length() > 1000) continue
-            status("Downloading the spelling model ($local, about 110 MB, one time)…")
-            fetchFile("https://huggingface.co/$REPO/resolve/main/$remote", f)
+            fetchFile("https://huggingface.co/$REPO/resolve/main/$remote", f, status)
         }
         return dir
     }

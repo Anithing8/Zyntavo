@@ -11,11 +11,8 @@ fun ensureVoskModel(baseDir: File, name: String, status: (String) -> Unit): File
     val dir = File(baseDir, name)
     if (File(dir, "am/final.mdl").exists()) return dir
     baseDir.mkdirs()
-    status("Downloading the speech model (about 40 MB, one time)…")
     val zip = File(baseDir, "$name.zip")
-    URL("https://alphacephei.com/vosk/models/$name.zip").openStream().use { i ->
-        zip.outputStream().use { o -> i.copyTo(o) }
-    }
+    downloadFile("https://alphacephei.com/vosk/models/$name.zip", zip, "the speech model", status)
     status("Unpacking the model…")
     val root = baseDir.canonicalPath
     ZipInputStream(zip.inputStream()).use { z ->
@@ -31,6 +28,10 @@ fun ensureVoskModel(baseDir: File, name: String, status: (String) -> Unit): File
         }
     }
     zip.delete()
+    if (!File(dir, "am/final.mdl").exists()) {
+        dir.deleteRecursively()
+        throw IllegalStateException("The speech model did not unpack correctly. Please try again.")
+    }
     return dir
 }
 

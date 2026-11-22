@@ -48,6 +48,14 @@ Photo and Video use the usual phone-editor layout: the picture on top, then (in 
 fixed playhead, then a row of tools at the bottom. Tapping a tool opens its controls in a sheet; the tick closes it.
 Tapping a clip selects it and shows Split, Duplicate and Delete. Titles, overlays and voices have their own rows on the timeline.
 
+## Hinglish captions
+
+Choose **Hinglish** under *Language spoken*, then pick how the captions are written: **Hinglish** (Roman letters, like
+"aaj hum meeting mein jaayenge"), **Hindi** (Devanagari) or **English** (translated). Use the **Max** accuracy level for the best result.
+Common Hindi words are written in their usual spelling (hai, nahi, kya, mein), and English words that Hindi speech writes in
+Devanagari come back as English (मीटिंग becomes meeting). Other words are written by rules, so spellings can differ from how you
+would type them; fix them in the caption list and the app learns the fix for next time.
+
 ## Auto edit
 
 The **Auto edit** button in the Prompt tool lets the app decide. You can say what you are after in loose words,

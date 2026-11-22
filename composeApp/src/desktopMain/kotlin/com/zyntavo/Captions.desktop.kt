@@ -43,14 +43,18 @@ actual fun rememberCaptionGenerator(
                                 ffmpegPath(), "-v", "error", "-i", file.absolutePath,
                                 "-vn", "-ar", "16000", "-ac", "1", "-f", "s16le", "-"
                             ).redirectError(ProcessBuilder.Redirect.DISCARD).start()
+                            var total = 0L
                             p.inputStream.use { ins ->
                                 val buf = ByteArray(8192)
                                 while (true) {
                                     val n = ins.read(buf)
                                     if (n < 0) break
+                                    total += n
                                     s.feed(buf, n)
                                 }
                             }
+                            p.waitFor()
+                            if (total == 0L) throw IllegalStateException("This file has no sound, or FFmpeg could not read it")
                             s.finish()
                         }
                     try {
@@ -64,10 +68,14 @@ actual fun rememberCaptionGenerator(
                     }
                 }
             } catch (e: IOException) {
-                onStatus("FFmpeg was not found. Install FFmpeg, or use the Windows build from GitHub Actions, which includes it.")
+                val missing = e.message?.contains("Cannot run program") == true
+                onStatus(
+                    if (missing) "FFmpeg was not found. Install FFmpeg, or use the Windows build from GitHub Actions, which includes it."
+                    else "Failed: ${e.message ?: "unknown error"}"
+                )
                 null
             } catch (e: Throwable) {
-                onStatus("Failed: ${e.message ?: "unknown error"}. For the first run, connect to the internet.")
+                onStatus("Failed: ${e.message ?: "unknown error"}")
                 null
             }
             onBusy(false)

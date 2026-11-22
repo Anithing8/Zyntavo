@@ -78,12 +78,15 @@ private class WhisperSink(
     override fun finish(): List<Word> {
         if (count < 1600) return emptyList()
         val chunks = Whisper.Session(dir, english, lang, translate).use { it.transcribe(pcm, count, status) }
-        val flat = chunks.flatMap { it.words }
-        if (flat.isEmpty()) return flat
-        if (translate) return flat
+        if (translate) return chunks.flatMap { it.words }
         status("Matching the words to the sound…")
         val vosk = try { voskWords() } catch (e: Throwable) { emptyList() }
-        return if (vosk.isEmpty()) flat else chunks.flatMap { Whisper.alignToVosk(it, vosk) }
+        if (chunks.isEmpty() && vosk.isEmpty()) return emptyList()
+        val matched = if (vosk.isEmpty()) chunks.flatMap { it.words } else chunks.flatMap { Whisper.alignToVosk(it, vosk) }
+        // Speech that Whisper skipped (too noisy, or unsure) is filled in from the standard recognizer, so nothing that was said goes missing.
+        val covered = chunks.map { (it.start - 0.3)..(it.end + 0.3) }
+        val gaps = vosk.filter { w -> val mid = (w.start + w.end) / 2; covered.none { mid in it } }
+        return (matched + gaps).sortedBy { it.start }
     }
 
     override fun close() {}
@@ -128,8 +131,7 @@ object Whisper {
         for ((remote, local) in files) {
             val f = File(dir, local)
             if (f.exists() && f.length() > 1000) continue
-            status("Downloading the speech model ($local), one time…")
-            download("https://huggingface.co/$repo/resolve/main/$remote", f)
+            download("https://huggingface.co/$repo/resolve/main/$remote", f, status)
         }
         val gen = File(dir, "generation_config.json")
         if (!gen.exists()) try { download("https://huggingface.co/$repo/resolve/main/generation_config.json", gen) } catch (e: Exception) { }
@@ -139,10 +141,9 @@ object Whisper {
         return dir
     }
 
-    private fun download(url: String, to: File) {
-        val tmp = File(to.path + ".part")
-        URL(url).openStream().use { i -> tmp.outputStream().use { o -> i.copyTo(o) } }
-        if (!tmp.renameTo(to)) throw IllegalStateException("Could not save ${to.name}")
+    private fun download(url: String, to: File, status: ((String) -> Unit)? = null) {
+        val what = when (to.name) { "encoder.onnx" -> "the speech model (part 1 of 3)"; "decoder.onnx" -> "the speech model (part 2 of 3)"; else -> "the speech model (${to.name})" }
+        downloadFile(url, to, what, status)
     }
 
     // ---------- text: GPT-2 style byte-level tokens ----------
@@ -459,7 +460,9 @@ object Whisper {
             chunks.forEachIndexed { ci, ch ->
                 status("Transcribing… part ${ci + 1} of ${chunks.size}")
                 val (text, lp) = decode(logMel(audio, ch.start, ch.end - ch.start))
-                if (text.isBlank() || lp < -1.2f) return@forEachIndexed
+                // Drop only what is clearly nothing or a made-up repeat. A low score alone is not enough: accents and
+                // noise lower it, and dropping those parts left holes in the subtitles.
+                if (text.isBlank() || lp < -2.4f) return@forEachIndexed
                 if (text.length > 40 && compressionRatio(text) > 2.4) return@forEachIndexed
                 val words = align(text, ch)
                 if (words.isNotEmpty()) result.add(ChunkWords(ch.voiced.first()[0].toDouble() / SR, ch.voiced.last()[1].toDouble() / SR, words))

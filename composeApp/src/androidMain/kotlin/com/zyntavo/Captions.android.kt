@@ -51,7 +51,7 @@ actual fun rememberCaptionGenerator(
                     }
                 }
             } catch (e: Throwable) {
-                onStatus("Failed: ${e.message ?: "unknown error"}. For the first run, connect to the internet.")
+                onStatus("Failed: ${e.message ?: "unknown error"}")
                 null
             }
             onBusy(false)
@@ -65,13 +65,36 @@ actual fun rememberCaptionGenerator(
 actual fun rememberTextSaver(onResult: (String) -> Unit): (String, String) -> Unit {
     val ctx = LocalContext.current
     var pending by remember { mutableStateOf("") }
-    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/x-subrip")) { uri ->
+    val launcher = rememberLauncherForActivityResult(CreateTextDocument()) { uri ->
         if (uri != null) {
-            ctx.contentResolver.openOutputStream(uri)?.use { it.write(pending.toByteArray()) }
-            onResult("Saved.")
+            val ok = try {
+                ctx.contentResolver.openOutputStream(uri)?.use { it.write(pending.toByteArray(Charsets.UTF_8)) } != null
+            } catch (e: Exception) { false }
+            onResult(if (ok) "Saved." else "Could not save the file.")
         }
     }
     return { name, content -> pending = content; launcher.launch(name) }
+}
+
+/**
+ * Asks where to save a text file. The type is chosen from the file name, because with the wrong type Android can
+ * add its own ending to the name (a .vtt file saved as .vtt.srt, for example).
+ */
+private class CreateTextDocument : androidx.activity.result.contract.ActivityResultContract<String, Uri?>() {
+    override fun createIntent(context: Context, input: String): android.content.Intent {
+        val type = when (input.substringAfterLast('.', "").lowercase()) {
+            "srt" -> "application/x-subrip"
+            "vtt" -> "text/vtt"
+            else -> "application/octet-stream"
+        }
+        return android.content.Intent(android.content.Intent.ACTION_CREATE_DOCUMENT)
+            .addCategory(android.content.Intent.CATEGORY_OPENABLE)
+            .setType(type)
+            .putExtra(android.content.Intent.EXTRA_TITLE, input)
+    }
+
+    override fun parseResult(resultCode: Int, intent: android.content.Intent?): Uri? =
+        if (resultCode == android.app.Activity.RESULT_OK) intent?.data else null
 }
 
 /** Decodes any audio track to 16 kHz mono 16-bit PCM and streams it to [sink]. */
@@ -85,9 +108,15 @@ private fun decodeAudio(ctx: Context, uri: Uri, sink: (ByteArray, Int) -> Unit) 
     if (track < 0) { ex.release(); throw IllegalStateException("This file has no audio") }
     val fmt = ex.getTrackFormat(track)
     ex.selectTrack(track)
-    val codec = MediaCodec.createDecoderByType(fmt.getString(MediaFormat.KEY_MIME)!!)
-    codec.configure(fmt, null, null, 0)
-    codec.start()
+    val codec = try {
+        MediaCodec.createDecoderByType(fmt.getString(MediaFormat.KEY_MIME)!!).also {
+            it.configure(fmt, null, null, 0)
+            it.start()
+        }
+    } catch (e: Exception) {
+        ex.release()
+        throw IllegalStateException("This phone cannot read the sound in this file (${fmt.getString(MediaFormat.KEY_MIME)})")
+    }
     var rate = fmt.getInteger(MediaFormat.KEY_SAMPLE_RATE)
     var ch = fmt.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
     val info = MediaCodec.BufferInfo()
